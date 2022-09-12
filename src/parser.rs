@@ -95,7 +95,7 @@ const INSTRUCTIONS: [Instruction; 21] = [
     instup!("nop", 13, 0, 0),
     instup!("ld", 14, 1, 2),
     instup!("st", 15, 1, 2),
-    // src can be either a label or a word offset
+    // src(if allowed) is a label
     instup!("beq", 16, 0, 1),
     instup!("bgt", 17, 0, 1),
     instup!("b", 18, 0, 1),
@@ -177,9 +177,43 @@ struct Statement {
     src2: Operand,
 }
 
-type PeekableChars<'a> = std::iter::Peekable<std::str::Chars<'a>>;
-pub struct Parser<'a> {
-    citer: PeekableChars<'a>,
+struct Scanner {
+    chars: Vec<char>,
+    cursor: usize,
+}
+
+impl Scanner {
+    fn from(input: &str) -> Self {
+        Scanner {
+            chars: input.chars().collect(),
+            cursor: 0,
+        }
+    }
+
+    fn peek(&self) -> Option<&char> {
+        if self.cursor != self.chars.len() {
+            Some(&self.chars[self.cursor])
+        } else {
+            None
+        }
+    }
+
+    fn peekn(&self, n: usize) -> Option<&char> {
+        if self.cursor + n < self.chars.len() {
+            Some(&self.chars[self.cursor + n])
+        } else {
+            None
+        }
+    }
+
+    fn next(&mut self) -> Option<&char> {
+        self.cursor += 1;
+        self.peek()
+    }
+}
+
+pub struct Parser {
+    citer: Scanner,
     stmt_cnt: usize,
     cursor: usize,
     line: usize,
@@ -187,10 +221,10 @@ pub struct Parser<'a> {
     labels: HashMap<String, usize>,
 }
 
-impl<'a> Parser<'a> {
-    pub fn from(input: &'a str) -> Self {
+impl Parser {
+    pub fn from(input: &str) -> Self {
         Parser {
-            citer: input.chars().peekable(),
+            citer: Scanner::from(input),
             labels: HashMap::new(),
             stmt_cnt: 0,
             cursor: 0,
@@ -219,8 +253,8 @@ impl<'a> Parser<'a> {
                 Token::Inst(inst) => {
                     stmts.push(self.statement(inst)?);
                 }
-                Token::Eof => break,
                 Token::Char('\n') => { /* Ignore extra newlines */ }
+                Token::Eof => break,
                 _ => return Err(ParseErr::UnexpectedToken),
             };
         }
@@ -368,7 +402,7 @@ fn encode_offset(opcode: u8, label_at: usize, cur_at: usize) -> u32 {
 }
 
 /// take_while consumes an extra character at last so..., use this
-fn collect_chars_while(citer: &mut PeekableChars, pred: fn(ch: &char) -> bool) -> String {
+fn collect_chars_while(citer: &mut Scanner, pred: fn(ch: &char) -> bool) -> String {
     let mut ret = String::new();
     while let Some(&ch) = citer.peek() {
         if pred(&ch) {
@@ -381,7 +415,7 @@ fn collect_chars_while(citer: &mut PeekableChars, pred: fn(ch: &char) -> bool) -
     ret
 }
 
-fn immediate(citer: &mut PeekableChars) -> Result<Token, ParseErr> {
+fn immediate(citer: &mut Scanner) -> Result<Token, ParseErr> {
     let mut base = 10;
     let mut is_neg = false;
     let num: u16;
@@ -394,9 +428,7 @@ fn immediate(citer: &mut PeekableChars) -> Result<Token, ParseErr> {
         _ => {}
     }
     if let Some('0') = citer.peek() {
-        // Leading zeros can be safely discarded
-        citer.next();
-        match citer.peek() {
+        match citer.peekn(1) {
             Some('x') => base = 16,
             Some('o') => base = 8,
             Some('b') => base = 2,
@@ -404,11 +436,11 @@ fn immediate(citer: &mut PeekableChars) -> Result<Token, ParseErr> {
         }
         if base != 10 {
             citer.next();
+            citer.next();
         }
     }
 
     let num_str = collect_chars_while(citer, char::is_ascii_alphanumeric);
-    // If nothing useful after parsing sign and/or prefix
     match u16::from_str_radix(num_str.as_str(), base) {
         Ok(ntmp) => {
             num = ntmp;
@@ -417,6 +449,7 @@ fn immediate(citer: &mut PeekableChars) -> Result<Token, ParseErr> {
             IntErrorKind::NegOverflow | IntErrorKind::PosOverflow => {
                 return Err(ParseErr::ImmOverflow)
             }
+            // Also handles if string is empty
             _ => return Err(ParseErr::InvalidImm),
         },
     }
@@ -430,7 +463,7 @@ fn immediate(citer: &mut PeekableChars) -> Result<Token, ParseErr> {
     Ok(Token::Imm(num))
 }
 
-fn identifier(citer: &mut PeekableChars) -> Result<Token, ParseErr> {
+fn identifier(citer: &mut Scanner) -> Result<Token, ParseErr> {
     let ident = collect_chars_while(citer, |&c| c.is_ascii_alphanumeric() || c == '_');
     // Can be a register name or instruction name
     if let Some(&reg) = REGISTERS.iter().find(|&&reg| reg.0 == ident) {
@@ -486,6 +519,8 @@ fn instruction(mut iname: &str) -> Result<Token, ParseErr> {
 
 #[cfg(test)]
 mod tests {
+    use crate::parser::Scanner;
+
     use super::immediate;
     use super::instruction;
     use super::Instruction;
@@ -494,15 +529,16 @@ mod tests {
 
     #[test]
     fn imm_test() {
-        let test_pairs: [(&str, Result<Token, ParseErr>); 5] = [
+        let test_pairs: [(&str, Result<Token, ParseErr>); 6] = [
             ("42", Ok(Token::Imm(42))),
+            ("0", Ok(Token::Imm(0))),
             ("-42", Ok(Token::Imm(!42 + 1))),
             ("-0x69", Ok(Token::Imm(!0x69 + 1))),
             ("0x1FFFF", Err(ParseErr::ImmOverflow)),
             ("0x1oops", Err(ParseErr::InvalidImm)),
         ];
         for (test, res) in test_pairs {
-            assert_eq!(immediate(&mut test.chars().peekable()), res);
+            assert_eq!(immediate(&mut Scanner::from(test)), res);
         }
     }
 
