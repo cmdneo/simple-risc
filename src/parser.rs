@@ -1,16 +1,5 @@
+use crate::info::{self, opcodes, Instruction, INSTRUCTIONS};
 use std::{collections::HashMap, num::IntErrorKind};
-
-pub const WORD_BITS: u8 = 32;
-const OPCODE_OFF: u8 = 27;
-const IMM_BIT_OFF: u8 = 26;
-const DST_OFF: u8 = 22;
-const SRC1_OFF: u8 = 18;
-const MOD_OFF: u8 = 16;
-const SRC2_OFF: u8 = 14;
-
-const MOD_DEF: u8 = 0b00;
-const MOD_U: u8 = 0b01;
-const MOD_H: u8 = 0b10;
 
 const REGISTERS: [(&str, u8); 16] = [
     ("r0", 0),
@@ -31,78 +20,6 @@ const REGISTERS: [(&str, u8); 16] = [
     ("r15", 15),
 ];
 
-pub mod opcodes {
-    pub const ADD: u8 = 0;
-    pub const SUB: u8 = 1;
-    pub const MUL: u8 = 2;
-    pub const DIV: u8 = 3;
-    pub const MOD: u8 = 4;
-    pub const CMP: u8 = 5;
-    pub const AND: u8 = 6;
-    pub const OR: u8 = 7;
-    pub const NOT: u8 = 8;
-    pub const MOV: u8 = 9;
-    pub const LSL: u8 = 10;
-    pub const LSR: u8 = 11;
-    pub const ASR: u8 = 12;
-    pub const NOP: u8 = 13;
-    pub const LD: u8 = 14;
-    pub const ST: u8 = 15;
-    pub const BEQ: u8 = 16;
-    pub const BGT: u8 = 17;
-    pub const B: u8 = 18;
-    pub const CALL: u8 = 19;
-    pub const RET: u8 = 20;
-}
-
-#[derive(PartialEq, Debug)]
-struct Instruction {
-    name: &'static str,
-    opcode: u8,
-    ndst: u8,
-    nsrc: u8,
-    modbits: u8,
-}
-
-macro_rules! instup {
-    ($name:literal, $opcode:literal, $ndst:literal, $nsrc:literal) => {
-        Instruction {
-            name: $name,
-            opcode: $opcode,
-            ndst: $ndst,
-            nsrc: $nsrc,
-            modbits: 0u8,
-        }
-    };
-}
-
-const INSTRUCTIONS: [Instruction; 21] = [
-    // Support u an h modifiers
-    instup!("add", 0, 1, 2),
-    instup!("sub", 1, 1, 2),
-    instup!("mul", 2, 1, 2),
-    instup!("div", 3, 1, 2),
-    instup!("mod", 4, 1, 2),
-    instup!("cmp", 5, 0, 2),
-    instup!("and", 6, 1, 2),
-    instup!("or", 7, 1, 2),
-    instup!("not", 8, 1, 1),
-    instup!("mov", 9, 1, 1),
-    instup!("lsl", 10, 1, 2),
-    instup!("lsr", 11, 1, 2),
-    instup!("asr", 12, 1, 2),
-    // These below do not support u and h modifiers
-    instup!("nop", 13, 0, 0),
-    instup!("ld", 14, 1, 2),
-    instup!("st", 15, 1, 2),
-    // src(if allowed) is a label
-    instup!("beq", 16, 0, 1),
-    instup!("bgt", 17, 0, 1),
-    instup!("b", 18, 0, 1),
-    instup!("call", 19, 0, 1),
-    instup!("ret", 20, 0, 0),
-];
-
 #[derive(Debug, PartialEq)]
 enum Token {
     Eof,
@@ -116,16 +33,17 @@ enum Token {
 #[derive(Debug, PartialEq)]
 pub enum ParseErr {
     NoMatch,
-    ImmOverflow,
-    InvalidImm,
-    InvalidMod,
-    ImmediateExpected,
-    RegisterExpected,
-    IdentifierExpected,
+    InvalidModifier,
+    ImmediateOverflow,
+    InvalidImmediate,
     DuplicateLabel,
     UndefinedLabel,
-    OperandExpected,
     UnexpectedToken,
+    // Needed but not present kinds
+    RegisterExpected,
+    ImmediateExpected,
+    OperandExpected,
+    IdentifierExpected,
     CharExpected(char),
 }
 
@@ -184,26 +102,18 @@ struct Scanner {
 
 impl Scanner {
     fn from(input: &str) -> Self {
-        Scanner {
+        Self {
             chars: input.chars().collect(),
             cursor: 0,
         }
     }
 
     fn peek(&self) -> Option<&char> {
-        if self.cursor != self.chars.len() {
-            Some(&self.chars[self.cursor])
-        } else {
-            None
-        }
+        self.chars.get(self.cursor)
     }
 
     fn peekn(&self, n: usize) -> Option<&char> {
-        if self.cursor + n < self.chars.len() {
-            Some(&self.chars[self.cursor + n])
-        } else {
-            None
-        }
+        self.chars.get(self.cursor + n)
     }
 
     fn next(&mut self) -> Option<&char> {
@@ -222,9 +132,9 @@ pub struct Parser {
 }
 
 impl Parser {
-    pub fn from(input: &str) -> Self {
-        Parser {
-            citer: Scanner::from(input),
+    pub fn from(code: &str) -> Self {
+        Self {
+            citer: Scanner::from(code),
             labels: HashMap::new(),
             stmt_cnt: 0,
             cursor: 0,
@@ -324,6 +234,7 @@ impl Parser {
     fn statement(&mut self, inst: Instruction) -> Result<Statement, ParseErr> {
         let (mut dst, mut src1, mut src2) = (0u8, 0u8, Operand::Reg(0));
         let is_ldst = [opcodes::LD, opcodes::ST].contains(&inst.opcode);
+        // Label only instructions take only one source and no destination
         let is_op2_label = inst.ndst == 0 && inst.nsrc == 1;
 
         // := reg
@@ -346,25 +257,34 @@ impl Parser {
             src2 = Operand::Label(self.next_tok()?.try_ident()?);
         }
         // := reg
-        //  | reg ',' reg
+        //  | imm
+        else if inst.nsrc == 1 {
+            let tmp = self.next_tok()?;
+            if let Token::Reg(reg) = tmp {
+                src2 = Operand::Reg(reg);
+            } else if let Token::Imm(imm) = tmp {
+                src2 = Operand::Imm(imm)
+            } else {
+                return Err(ParseErr::OperandExpected);
+            }
+        }
+        // := reg ',' reg
         //  | reg ',' imm
-        else if inst.nsrc > 0 {
+        else if inst.nsrc == 2 {
             src1 = self.next_tok()?.try_reg()?;
-            if inst.nsrc == 2 {
-                self.next_tok()?.try_the_char(',')?;
-                let tmp = self.next_tok()?;
-                // reg or imm
-                if let Token::Reg(reg) = tmp {
-                    src2 = Operand::Reg(reg);
-                } else if let Token::Imm(imm) = tmp {
-                    src2 = Operand::Imm(imm)
-                } else {
-                    return Err(ParseErr::OperandExpected);
-                }
+            self.next_tok()?.try_the_char(',')?;
+            let tmp = self.next_tok()?;
+            if let Token::Reg(reg) = tmp {
+                src2 = Operand::Reg(reg);
+            } else if let Token::Imm(imm) = tmp {
+                src2 = Operand::Imm(imm)
+            } else {
+                return Err(ParseErr::OperandExpected);
             }
         }
         self.next_tok()?.try_the_char('\n')?;
         self.stmt_cnt += 1;
+
         Ok(Statement {
             inst,
             dst,
@@ -372,24 +292,22 @@ impl Parser {
             src2,
         })
     }
-
-    // fn next_token(mut self) -> Token<'a> {}
 }
 
 fn encode_rrx(opcode: u8, dst: u8, src1: u8, modbits: u8, src2: Operand) -> u32 {
     match src2 {
         Operand::Reg(regs2) => {
-            (opcode as u32) << OPCODE_OFF
-                | (dst as u32) << DST_OFF
-                | (src1 as u32) << SRC1_OFF
-                | (regs2 as u32) << SRC2_OFF
+            (opcode as u32) << info::OPCODE_OFF
+                | (dst as u32) << info::DST_OFF
+                | (src1 as u32) << info::SRC1_OFF
+                | (regs2 as u32) << info::SRC2_OFF
         }
         Operand::Imm(imm) => {
-            (opcode as u32) << OPCODE_OFF
-                | 1 << IMM_BIT_OFF
-                | (dst as u32) << DST_OFF
-                | (src1 as u32) << SRC1_OFF
-                | (modbits as u32) << MOD_OFF
+            (opcode as u32) << info::OPCODE_OFF
+                | 1 << info::IMMBIT_OFF
+                | (dst as u32) << info::DST_OFF
+                | (src1 as u32) << info::SRC1_OFF
+                | (modbits as u32) << info::MOD_OFF
                 | (imm as u32)
         }
         Operand::Label(_) => panic!("This function cannot do Operand::Label"),
@@ -398,7 +316,7 @@ fn encode_rrx(opcode: u8, dst: u8, src1: u8, modbits: u8, src2: Operand) -> u32 
 
 fn encode_offset(opcode: u8, label_at: usize, cur_at: usize) -> u32 {
     let offset = (label_at as i32 - cur_at as i32) as u32;
-    (opcode as u32) << OPCODE_OFF | (offset & (!0u32 >> OPCODE_OFF))
+    (opcode as u32) << info::OPCODE_OFF | (offset & (!0u32 >> info::OPCODE_BITS))
 }
 
 /// take_while consumes an extra character at last so..., use this
@@ -447,16 +365,16 @@ fn immediate(citer: &mut Scanner) -> Result<Token, ParseErr> {
         }
         Err(e) => match e.kind() {
             IntErrorKind::NegOverflow | IntErrorKind::PosOverflow => {
-                return Err(ParseErr::ImmOverflow)
+                return Err(ParseErr::ImmediateOverflow)
             }
             // Also handles if string is empty
-            _ => return Err(ParseErr::InvalidImm),
+            _ => return Err(ParseErr::InvalidImmediate),
         },
     }
     if is_neg {
         // Check for overflow and then convert to 2's Complement representation
         if num > (std::i16::MIN as i32).abs() as u16 {
-            return Err(ParseErr::ImmOverflow);
+            return Err(ParseErr::ImmediateOverflow);
         }
         return Ok(Token::Imm(!num + 1));
     }
@@ -478,14 +396,14 @@ fn identifier(citer: &mut Scanner) -> Result<Token, ParseErr> {
 }
 
 fn instruction(mut iname: &str) -> Result<Token, ParseErr> {
-    let mut modbits: u8 = MOD_DEF;
+    let mut modbits: u8 = info::MOD_DEF;
 
     if iname.ends_with('u') {
         iname = iname.strip_suffix('u').unwrap();
-        modbits = MOD_U;
+        modbits = info::MOD_U;
     } else if iname.ends_with('h') {
         iname = iname.strip_suffix('h').unwrap();
-        modbits = MOD_H;
+        modbits = info::MOD_H;
     }
 
     for Instruction {
@@ -501,8 +419,8 @@ fn instruction(mut iname: &str) -> Result<Token, ParseErr> {
         }
         // Immediate modifiers are supported only for instructions with
         // opcode 12 or less(before NOP)
-        if modbits != MOD_DEF && opcode >= opcodes::NOP {
-            return Err(ParseErr::InvalidMod);
+        if modbits != info::MOD_DEF && opcode >= opcodes::NOP {
+            return Err(ParseErr::InvalidModifier);
         }
 
         return Ok(Token::Inst(Instruction {
@@ -519,12 +437,11 @@ fn instruction(mut iname: &str) -> Result<Token, ParseErr> {
 
 #[cfg(test)]
 mod tests {
-    use crate::parser::Scanner;
-
     use super::immediate;
     use super::instruction;
     use super::Instruction;
     use super::ParseErr;
+    use super::Scanner;
     use super::Token;
 
     #[test]
@@ -534,8 +451,8 @@ mod tests {
             ("0", Ok(Token::Imm(0))),
             ("-42", Ok(Token::Imm(!42 + 1))),
             ("-0x69", Ok(Token::Imm(!0x69 + 1))),
-            ("0x1FFFF", Err(ParseErr::ImmOverflow)),
-            ("0x1oops", Err(ParseErr::InvalidImm)),
+            ("0x1FFFF", Err(ParseErr::ImmediateOverflow)),
+            ("0x1oops", Err(ParseErr::InvalidImmediate)),
         ];
         for (test, res) in test_pairs {
             assert_eq!(immediate(&mut Scanner::from(test)), res);
@@ -551,7 +468,7 @@ mod tests {
                 opcode: 0,
                 ndst: 1,
                 nsrc: 2,
-                modbits: super::MOD_DEF,
+                modbits: super::info::MOD_DEF,
             }))
         );
         assert_eq!(
@@ -561,11 +478,11 @@ mod tests {
                 opcode: 0,
                 ndst: 1,
                 nsrc: 2,
-                modbits: super::MOD_H,
+                modbits: super::info::MOD_H,
             }))
         );
         // Invalid ones
-        assert_eq!(instruction("nopu"), Err(ParseErr::InvalidMod));
+        assert_eq!(instruction("nopu"), Err(ParseErr::InvalidModifier));
         assert_eq!(instruction("nosuchins"), Err(ParseErr::NoMatch));
     }
 }

@@ -3,7 +3,8 @@ use simple_risc::parser::{ParseErr, Parser};
 #[test]
 fn test_fine() {
     // Test only for first instruction
-    let test_pairs: [(&str, u32); 3] = [
+    let test_pairs: [(&str, u32); 4] = [
+        ("mov r0, -0x1\n", 0b01001_1_0000_0000_00_1111111111111111),
         ("add r0, r1, r2\n", 0b00000_0_0000_0001_0010 << 14),
         (
             "add r0, r1, 0b1101\n",
