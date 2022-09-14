@@ -58,7 +58,7 @@ pub mod opcodes {
     pub const RET: u8 = 20;
 }
 
-#[derive(PartialEq, Debug, Clone, Copy)]
+#[derive(PartialEq, Eq, Debug, Clone, Copy)]
 pub struct Instruction {
     pub name: &'static str,
     pub opcode: u8,

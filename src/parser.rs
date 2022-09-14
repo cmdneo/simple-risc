@@ -30,16 +30,15 @@ enum Token {
     Char(char),
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Eq)]
 pub enum ParseErr {
     NoMatch,
     InvalidModifier,
     ImmediateOverflow,
     InvalidImmediate,
-    DuplicateLabel,
-    UndefinedLabel,
     UnexpectedToken,
-    // Needed but not present kinds
+    DuplicateLabel(String),
+    UndefinedLabel(String),
     RegisterExpected,
     ImmediateExpected,
     OperandExpected,
@@ -51,23 +50,26 @@ pub enum ParseErr {
 impl Token {
     fn try_imm(&self) -> Result<u16, ParseErr> {
         if let Token::Imm(imm) = self {
-            return Ok(*imm);
+            Ok(*imm)
+        } else {
+            Err(ParseErr::ImmediateExpected)
         }
-        return Err(ParseErr::ImmediateExpected);
     }
 
     fn try_reg(&self) -> Result<u8, ParseErr> {
         if let Token::Reg(reg) = self {
-            return Ok(*reg);
+            Ok(*reg)
+        } else {
+            Err(ParseErr::RegisterExpected)
         }
-        return Err(ParseErr::RegisterExpected);
     }
 
     fn try_ident(&self) -> Result<String, ParseErr> {
         if let Token::Ident(ident) = self {
-            return Ok(ident.clone());
+            Ok(ident.clone())
+        } else {
+            Err(ParseErr::IdentifierExpected)
         }
-        return Err(ParseErr::IdentifierExpected);
     }
 
     fn try_the_char(&self, mc: char) -> Result<char, ParseErr> {
@@ -76,7 +78,7 @@ impl Token {
                 return Ok(mc);
             }
         }
-        return Err(ParseErr::CharExpected(mc));
+        Err(ParseErr::CharExpected(mc))
     }
 }
 
@@ -98,6 +100,7 @@ struct Statement {
 struct Scanner {
     chars: Vec<char>,
     cursor: usize,
+    line: usize,
 }
 
 impl Scanner {
@@ -105,6 +108,7 @@ impl Scanner {
         Self {
             chars: input.chars().collect(),
             cursor: 0,
+            line: 1,
         }
     }
 
@@ -117,17 +121,17 @@ impl Scanner {
     }
 
     fn next(&mut self) -> Option<&char> {
+        if let Some('\n') = self.peek() {
+            self.line += 1
+        }
         self.cursor += 1;
-        self.peek()
+        self.chars.get(self.cursor - 1)
     }
 }
 
 pub struct Parser {
     citer: Scanner,
     stmt_cnt: usize,
-    cursor: usize,
-    line: usize,
-    col: usize,
     labels: HashMap<String, usize>,
 }
 
@@ -137,14 +141,17 @@ impl Parser {
             citer: Scanner::from(code),
             labels: HashMap::new(),
             stmt_cnt: 0,
-            cursor: 0,
-            line: 1,
-            col: 0,
         }
     }
 
     pub fn print_err(&mut self, err: ParseErr) {
-        eprintln!("Error on line {}:{}: {:?}", self.line, self.col, err);
+        match err {
+            // Not detected at parse time, so no info about line & col
+            ParseErr::UndefinedLabel(_) => {
+                eprintln!("Error: {:?}", err)
+            }
+            _ => eprintln!("Error on line {}: {:?}", self.citer.line, err),
+        }
     }
 
     pub fn parse(&mut self) -> Result<Vec<u32>, ParseErr> {
@@ -155,10 +162,10 @@ impl Parser {
             match self.next_tok()? {
                 Token::Ident(ident) => {
                     self.next_tok()?.try_the_char(':')?;
-                    if let Some(_) = self.labels.insert(ident, self.stmt_cnt) {
-                        return Err(ParseErr::DuplicateLabel);
+                    if self.labels.contains_key(&ident) {
+                        return Err(ParseErr::DuplicateLabel(ident));
                     }
-                    continue;
+                    self.labels.insert(ident, self.stmt_cnt);
                 }
                 Token::Inst(inst) => {
                     stmts.push(self.statement(inst)?);
@@ -194,7 +201,7 @@ impl Parser {
             if let Some(&label_at) = self.labels.get(&ident) {
                 Ok(label_at)
             } else {
-                Err(ParseErr::UndefinedLabel)
+                Err(ParseErr::UndefinedLabel(ident))
             }
         } else {
             panic!("Non-label operand passed to get_label_pos");
@@ -203,12 +210,6 @@ impl Parser {
 
     fn next_tok(&mut self) -> Result<Token, ParseErr> {
         while let Some(&c) = self.citer.peek() {
-            self.col += 1;
-            self.cursor += 1;
-            if c == '\n' {
-                self.line += 1;
-                self.col = 0;
-            }
             if c == '\t' || c == ' ' || c == '@' {
                 // If a comment then skip to the end of the line
                 if c == '@' {
@@ -310,7 +311,7 @@ fn encode_rrx(opcode: u8, dst: u8, src1: u8, modbits: u8, src2: Operand) -> u32 
                 | (modbits as u32) << info::MOD_OFF
                 | (imm as u32)
         }
-        Operand::Label(_) => panic!("This function cannot do Operand::Label"),
+        Operand::Label(_) => panic!("This function cannot encode Operand::Label types"),
     }
 }
 
@@ -373,7 +374,7 @@ fn immediate(citer: &mut Scanner) -> Result<Token, ParseErr> {
     }
     if is_neg {
         // Check for overflow and then convert to 2's Complement representation
-        if num > (std::i16::MIN as i32).abs() as u16 {
+        if num > std::i16::MIN.unsigned_abs() {
             return Err(ParseErr::ImmediateOverflow);
         }
         return Ok(Token::Imm(!num + 1));

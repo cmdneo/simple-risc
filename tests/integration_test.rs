@@ -29,8 +29,14 @@ fn test_bad() {
         ("b r0\n", ParseErr::IdentifierExpected),
         ("cmp 24, 88\n", ParseErr::RegisterExpected),
         ("r13 add r11\n", ParseErr::UnexpectedToken),
-        ("b undefme\n", ParseErr::UndefinedLabel),
-        ("abc:\n\n abc: ret\n", ParseErr::DuplicateLabel),
+        (
+            "b undefme\n",
+            ParseErr::UndefinedLabel(String::from("undefme")),
+        ),
+        (
+            "abc:\n\n abc: ret\n",
+            ParseErr::DuplicateLabel(String::from("abc")),
+        ),
     ];
     for (input, err) in test_pairs {
         assert_eq!(Parser::from(input).parse().unwrap_err(), err);

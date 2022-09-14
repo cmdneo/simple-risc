@@ -13,7 +13,10 @@ fn main() {
             exit(1);
         }
     } else {
-        eprintln!("Usage: {} <filepath>", args().nth(0).unwrap());
+        eprintln!(
+            "Usage: {} <filepath>",
+            args().next().unwrap_or_else(|| String::from("simpleRISC"))
+        );
         exit(1);
     }
 

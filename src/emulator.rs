@@ -32,7 +32,6 @@ pub enum EmulatorErr {
     InvalidModbits,
     InvalidMemAddr,
     InvalidOpcode,
-    InvalidJump,
     UnalignedMemAddr,
 }
 
@@ -146,7 +145,11 @@ impl<'a> Emulator<'a> {
         // See src/info.rs for bits used by each field
         // TODO do better, looks ugly
         let opcode = get_bits(bits, info::OPCODE_BITS, info::OPCODE_OFF) as u8;
-        let is_imm = get_bits(bits, info::IMMBIT_BITS, info::IMMBIT_OFF) == 1;
+        // Branch and NOP instructions cannot have immediate, so always false for them
+        let is_imm = match opcode {
+            NOP | B | BEQ | BGT | CALL | RET => false,
+            _ => get_bits(bits, info::IMMBIT_BITS, info::IMMBIT_OFF) == 1,
+        };
         let modbits = get_bits(bits, info::MOD_BITS, info::MOD_OFF) as u8;
         let dst_reg = get_bits(bits, info::REG_BITS, info::DST_OFF) as usize;
         let src1 = self.registers[get_bits(bits, info::REG_BITS, info::SRC1_OFF) as usize];
@@ -157,12 +160,7 @@ impl<'a> Emulator<'a> {
                 info::MOD_DEF => sign_extend(imm, info::IMM_BITS),
                 info::MOD_U => imm as i32,
                 info::MOD_H => (imm << u16::BITS) as i32,
-                // Branch and NOP instructions do not have the modbits field,
-                // so ignore any invalid modbits for such instructions
-                _ => match opcode {
-                    NOP | B | BGT | BEQ | CALL | RET => 0,
-                    _ => return Err(EmulatorErr::InvalidModbits),
-                },
+                _ => return Err(EmulatorErr::InvalidModbits),
             }
         } else {
             self.registers[get_bits(bits, info::REG_BITS, info::SRC2_OFF) as usize].0
