@@ -81,9 +81,10 @@ impl<'a> Emulator<'a> {
         Ok(())
     }
 
+    /// Executes the instruction contained in `bits` and returns the new `pc`
     fn exec_ins(&mut self, bits: u32) -> Result<i32, EmulatorErr> {
         let UnpackedIns {
-            dst_reg,
+            mut dst_reg,
             src1,
             mut src2,
             memaddr,
@@ -99,6 +100,8 @@ impl<'a> Emulator<'a> {
             // Only consider the lower 5 bits for shift amount(that is max 31)
             LSL | LSR | ASR => src2 = Wrapping(src2.0 & 0b11111),
             DIV | MOD if src2.0 == 0 => return Err(EmulatorErr::DivideByZero),
+            // A syscall stores its return value in r0
+            SYS => dst_reg = 0,
             _ => {}
         };
 
@@ -133,7 +136,7 @@ impl<'a> Emulator<'a> {
                 return Ok(new_pc);
             }
             RET => return Ok(self.regs[info::RET_REG].0),
-            SYS => Wrapping(self.do_syscall(src2.0)?),
+            SYS => Wrapping(self.do_syscall(self.regs[0].0)?),
             _ => {
                 return Err(EmulatorErr::InvalidOpcode);
             }

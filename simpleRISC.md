@@ -76,7 +76,7 @@ shift instructions(`lsl`, `lsr` and `asr`).
 | `call label`            | `r15 <- (pc + 1)`, then branch             |
 | `ret`                   | `pc <- r15` (branches to return address)   |
 | `nop`                   | No operation                               |
-| `sys reg, reg/imm`      | `A <- syscall(B)` [^3]                     |
+| `sys`                   | `r0 <- syscall(r0)` [^3]                   |
 
 
 ### Modifiers
@@ -95,10 +95,9 @@ Extras
 Some (maybe)useful extensions to **simpleRISC**
 
 ### The `sys` instruction
-`sys dst_reg src_reg/src_imm`
 
-The value returned from the syscall is stored in `dst_reg`.  
-The `src_reg/src_imm` contains the syscall number.  
+The value returned from the syscall is stored in `r0`.  
+The `r0` contains the syscall number.  
 Arguments(max 6) as passed via registers as: 
 | Argument | Register |
 | :------: | :------: |
@@ -108,6 +107,8 @@ Arguments(max 6) as passed via registers as:
 |  Arg-4   |   `r4`   |
 |  Arg-5   |   `r5`   |
 |  Arg-6   |   `r6`   |
+
+Rest of the registers are preserved.
 
 ### List of syscalls
 

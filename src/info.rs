@@ -22,12 +22,12 @@ opcode word_offset(2's complement)
 
 /**
 The system-call instruction
-This instruction takes operands as: sys dst_reg src_reg|src_imm
+sys is a 0-address instruction.
 
 It uses the following registers for argument passing and return values:
-Sycall number : src_reg|src|imm
+Sycall number : r0
 Argument[1-6] : r[1-6]
-Return value  : dst_reg
+Return value  : r0
 
 Information about system calls is documented in the simpleRISC.md file
  */
@@ -129,7 +129,7 @@ pub const INSTRUCTIONS: [Instruction; 22] = [
     instup!("b", B, 0, 1),
     instup!("call", CALL, 0, 1),
     instup!("ret", RET, 0, 0),
-    instup!("sys", SYS, 1, 1),
+    instup!("sys", SYS, 0, 0),
 ];
 
 pub fn support_mod(opcode: u8) -> bool {
