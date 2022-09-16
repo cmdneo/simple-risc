@@ -1,9 +1,11 @@
 //! Implements a basic (maybe working) emulator for simpleRISC.
 //! It uses 2's complement wrap-around arithmetic for all calculations.
 
-use crate::info;
-use info::opcodes::*;
-use std::num::Wrapping;
+use crate::info::{self, opcodes::*};
+use std::{
+    io::{Read, Write},
+    num::Wrapping,
+};
 
 const MEM_WORD_MAX: usize = 4096;
 
@@ -17,7 +19,8 @@ struct UnpackedIns {
 }
 
 pub struct Emulator<'a> {
-    registers: [Wrapping<i32>; 16],
+    /// Register file, r[0-15]
+    regs: [Wrapping<i32>; 16],
     /// Stores words(=4bytes) instead of storing each byte seperately.
     /// Only for aligned(by 4 bytes) access, word_index = memaddr/4
     wmemory: [Wrapping<i32>; MEM_WORD_MAX],
@@ -32,6 +35,8 @@ pub enum EmulatorErr {
     InvalidModbits,
     InvalidMemAddr,
     InvalidOpcode,
+    InvalidSyscall,
+    DivideByZero,
     UnalignedMemAddr,
 }
 
@@ -50,7 +55,7 @@ fn sign_extend(num: u32, nbits: u8) -> i32 {
 impl<'a> Emulator<'a> {
     pub fn from(instructions: &'a [u32]) -> Self {
         Self {
-            registers: [Wrapping(0); 16],
+            regs: [Wrapping(0); 16],
             wmemory: [Wrapping(0); 4096],
             instructions,
             prog_cnt: 0,
@@ -60,35 +65,44 @@ impl<'a> Emulator<'a> {
     }
 
     pub fn debug(&self) {
-        for (i, &rval) in self.registers.iter().enumerate() {
+        for (i, &rval) in self.regs.iter().enumerate() {
             println!("r{:<2} = {}", i, rval);
         }
     }
+
+    pub fn get_reg_val(&self, reg_num: usize) -> i32 {
+        self.regs[reg_num].0
+    }
+
     pub fn exec(&mut self) -> Result<(), EmulatorErr> {
         while self.prog_cnt >= 0 && (self.prog_cnt as usize) < self.instructions.len() {
             self.prog_cnt = self.exec_ins(self.instructions[self.prog_cnt as usize])?;
         }
         Ok(())
     }
+
     fn exec_ins(&mut self, bits: u32) -> Result<i32, EmulatorErr> {
         let UnpackedIns {
             dst_reg,
             src1,
-            src2,
+            mut src2,
             memaddr,
             new_pc,
             mut opcode,
         } = self.decode_fetch(bits)?;
 
-        // Convert BGT and BEQ to NOP if flags not set
-        if opcode == BGT && !self.flag_g {
-            opcode = NOP;
-        }
-        if opcode == BEQ && !self.flag_e {
-            opcode = NOP;
-        }
+        // Modify and verify fields as needed
+        match opcode {
+            // Convert BGT and BEQ to NOP if corresponding flags not set
+            BEQ if !self.flag_e => opcode = NOP,
+            BGT if !self.flag_g => opcode = NOP,
+            // Only consider the lower 5 bits for shift amount(that is max 31)
+            LSL | LSR | ASR => src2 = Wrapping(src2.0 & 0b11111),
+            DIV | MOD if src2.0 == 0 => return Err(EmulatorErr::DivideByZero),
+            _ => {}
+        };
 
-        self.registers[dst_reg] = match opcode {
+        self.regs[dst_reg] = match opcode {
             ADD => src1 + src2,
             SUB => src1 - src2,
             MUL => src1 * src2,
@@ -97,7 +111,7 @@ impl<'a> Emulator<'a> {
             CMP => {
                 self.flag_e = src1 == src2;
                 self.flag_g = src1 > src2;
-                self.registers[dst_reg]
+                self.regs[dst_reg]
             }
             AND => src1 & src2,
             OR => src1 | src2,
@@ -106,19 +120,20 @@ impl<'a> Emulator<'a> {
             LSL => Wrapping(src1.0 << src2.0),
             LSR => Wrapping(((src1.0 as u32) >> src2.0) as i32),
             ASR => Wrapping(src1.0 >> src2.0),
-            NOP => self.registers[dst_reg],
+            NOP => self.regs[dst_reg],
             LD => self.wmemory[self.get_word_index(memaddr)?],
             ST => {
-                self.wmemory[self.get_word_index(memaddr)?] = self.registers[dst_reg];
-                self.registers[dst_reg]
+                self.wmemory[self.get_word_index(memaddr)?] = self.regs[dst_reg];
+                self.regs[dst_reg]
             }
             // Conditional branch instructions are already converted to NOPs if flags not set
             BEQ | BGT | B => return Ok(new_pc),
             CALL => {
-                self.registers[info::RET_REG_ID] = Wrapping(self.prog_cnt + 1);
+                self.regs[info::RET_REG] = Wrapping(self.prog_cnt + 1);
                 return Ok(new_pc);
             }
-            RET => return Ok(self.registers[info::RET_REG_ID].0),
+            RET => return Ok(self.regs[info::RET_REG].0),
+            SYS => Wrapping(self.do_syscall(src2.0)?),
             _ => {
                 return Err(EmulatorErr::InvalidOpcode);
             }
@@ -134,7 +149,7 @@ impl<'a> Emulator<'a> {
             return Err(EmulatorErr::UnalignedMemAddr);
         }
         // A word is 4 bytes
-        let word_idx = memaddr as usize / 4;
+        let word_idx = (memaddr as usize) / 4;
         if word_idx >= MEM_WORD_MAX {
             return Err(EmulatorErr::InvalidMemAddr);
         }
@@ -142,17 +157,17 @@ impl<'a> Emulator<'a> {
     }
 
     fn decode_fetch(&self, bits: u32) -> Result<UnpackedIns, EmulatorErr> {
-        // See src/info.rs for bits used by each field
-        // TODO do better, looks ugly
+        // See src/info.rs for more info
         let opcode = get_bits(bits, info::OPCODE_BITS, info::OPCODE_OFF) as u8;
-        // Branch and NOP instructions cannot have immediate, so always false for them
+        // Branch instructions cannot have immediates(their encoding is different),
+        // so is_imm is always false for them
         let is_imm = match opcode {
-            NOP | B | BEQ | BGT | CALL | RET => false,
+            B | BEQ | BGT | CALL | RET => false,
             _ => get_bits(bits, info::IMMBIT_BITS, info::IMMBIT_OFF) == 1,
         };
         let modbits = get_bits(bits, info::MOD_BITS, info::MOD_OFF) as u8;
         let dst_reg = get_bits(bits, info::REG_BITS, info::DST_OFF) as usize;
-        let src1 = self.registers[get_bits(bits, info::REG_BITS, info::SRC1_OFF) as usize];
+        let src1 = self.regs[get_bits(bits, info::REG_BITS, info::SRC1_OFF) as usize];
         // src2 can be either a register or an immediate
         let tmps2 = if is_imm {
             let imm = get_bits(bits, info::IMM_BITS, 0);
@@ -163,12 +178,13 @@ impl<'a> Emulator<'a> {
                 _ => return Err(EmulatorErr::InvalidModbits),
             }
         } else {
-            self.registers[get_bits(bits, info::REG_BITS, info::SRC2_OFF) as usize].0
+            self.regs[get_bits(bits, info::REG_BITS, info::SRC2_OFF) as usize].0
         };
         let src2 = Wrapping(tmps2);
         let new_pc =
             self.prog_cnt + sign_extend(get_bits(bits, info::OFFSET_BITS, 0), info::OFFSET_BITS);
-        let memaddr = src2 + src1;
+        // imm[reg] is understood as (reg + imm)
+        let memaddr = src1 + src2;
 
         Ok(UnpackedIns {
             dst_reg,
@@ -178,6 +194,32 @@ impl<'a> Emulator<'a> {
             new_pc,
             opcode,
         })
+    }
+
+    fn do_syscall(&mut self, call_num: i32) -> Result<i32, EmulatorErr> {
+        let ret = match call_num {
+            0 => sys_getchar(),
+            1 => sys_putchar(self.regs[1].0),
+            _ => return Err(EmulatorErr::InvalidSyscall),
+        };
+        Ok(ret)
+    }
+}
+
+// All system call functions take i32 type for all arguments
+fn sys_getchar() -> i32 {
+    if let Some(Ok(b)) = std::io::stdin().bytes().next() {
+        b as i32
+    } else {
+        -1
+    }
+}
+
+fn sys_putchar(c: i32) -> i32 {
+    if let Ok(_) = std::io::stdout().write(&[c as u8]) {
+        c
+    } else {
+        -1
     }
 }
 

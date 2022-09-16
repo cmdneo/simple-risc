@@ -1,4 +1,7 @@
-use simple_risc::parser::{ParseErr, Parser};
+use simple_risc::{
+    emulator::Emulator,
+    parser::{ParseErr, Parser},
+};
 
 #[test]
 fn test_fine() {
@@ -22,10 +25,12 @@ fn test_fine() {
 
 #[test]
 fn test_bad() {
-    let test_pairs: [(&str, ParseErr); 8] = [
+    let test_pairs: [(&str, ParseErr); 10] = [
         ("add r0, r1", ParseErr::CharExpected(',')),
         ("add r0, r1, r4", ParseErr::CharExpected('\n')),
         ("add r0, r1, \n", ParseErr::OperandExpected),
+        ("addh r0, r1, r2 \n", ParseErr::IllegalModifier),
+        ("noph\n", ParseErr::IllegalModifier),
         ("b r0\n", ParseErr::IdentifierExpected),
         ("cmp 24, 88\n", ParseErr::RegisterExpected),
         ("r13 add r11\n", ParseErr::UnexpectedToken),
@@ -41,4 +46,36 @@ fn test_bad() {
     for (input, err) in test_pairs {
         assert_eq!(Parser::from(input).parse().unwrap_err(), err);
     }
+}
+
+#[test]
+fn test_factorial() {
+    let code = "@ Recursive Factorial function test
+    b main
+    main:
+        mov sp, 1024 @ Stack top
+        mov r0, 1     @ Result
+        mov r1, 5     @ N = 5
+        call factorial
+        call exit
+
+    factorial:
+        sub sp, sp, 4  @Stack create 4 bytes
+        st r15, 0[sp]   @Save return address
+        mul r0, r0, r1
+        sub r1, r1, 1
+        cmp r1, 1
+        beq ret_last
+        call factorial
+    ret_last:
+        ld r15, 0[sp]
+        add sp, sp, 4 @Stack destroy 4 bytes
+        ret
+        
+    exit: @ Nothing
+    ";
+    let bincode = Parser::from(code).parse().unwrap();
+    let mut emul = Emulator::from(&bincode);
+    emul.exec().unwrap();
+    assert_eq!(emul.get_reg_val(0), 120);
 }

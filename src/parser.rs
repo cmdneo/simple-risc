@@ -1,7 +1,7 @@
-use crate::info::{self, opcodes, Instruction, INSTRUCTIONS};
+use crate::info::{self, opcodes, Instruction};
 use std::{collections::HashMap, num::IntErrorKind};
 
-const REGISTERS: [(&str, u8); 16] = [
+const REGISTERS: [(&str, u8); 17] = [
     ("r0", 0),
     ("r1", 1),
     ("r2", 2),
@@ -17,6 +17,7 @@ const REGISTERS: [(&str, u8); 16] = [
     ("r12", 12),
     ("r13", 13),
     ("r14", 14),
+    ("sp", 14), // Alias for r14
     ("r15", 15),
 ];
 
@@ -33,7 +34,8 @@ enum Token {
 #[derive(Debug, PartialEq, Eq)]
 pub enum ParseErr {
     NoMatch,
-    InvalidModifier,
+    NoMainFound,
+    IllegalModifier,
     ImmediateOverflow,
     InvalidImmediate,
     UnexpectedToken,
@@ -46,35 +48,34 @@ pub enum ParseErr {
     CharExpected(char),
 }
 
-// Write a macro or some better solution
 impl Token {
-    fn try_imm(&self) -> Result<u16, ParseErr> {
-        if let Token::Imm(imm) = self {
-            Ok(*imm)
+    fn try_imm(self) -> Result<u16, ParseErr> {
+        if let Self::Imm(imm) = self {
+            Ok(imm)
         } else {
             Err(ParseErr::ImmediateExpected)
         }
     }
 
-    fn try_reg(&self) -> Result<u8, ParseErr> {
-        if let Token::Reg(reg) = self {
-            Ok(*reg)
+    fn try_reg(self) -> Result<u8, ParseErr> {
+        if let Self::Reg(reg) = self {
+            Ok(reg)
         } else {
             Err(ParseErr::RegisterExpected)
         }
     }
 
-    fn try_ident(&self) -> Result<String, ParseErr> {
-        if let Token::Ident(ident) = self {
-            Ok(ident.clone())
+    fn try_ident(self) -> Result<String, ParseErr> {
+        if let Self::Ident(ident) = self {
+            Ok(ident)
         } else {
             Err(ParseErr::IdentifierExpected)
         }
     }
 
-    fn try_the_char(&self, mc: char) -> Result<char, ParseErr> {
-        if let Token::Char(c) = self {
-            if *c == mc {
+    fn try_the_char(self, mc: char) -> Result<char, ParseErr> {
+        if let Self::Char(c) = self {
+            if c == mc {
                 return Ok(mc);
             }
         }
@@ -155,7 +156,6 @@ impl Parser {
     }
 
     pub fn parse(&mut self) -> Result<Vec<u32>, ParseErr> {
-        let mut ret: Vec<u32> = Vec::new();
         let mut stmts: Vec<Statement> = Vec::new();
 
         loop {
@@ -175,6 +175,11 @@ impl Parser {
                 _ => return Err(ParseErr::UnexpectedToken),
             };
         }
+        self.assemble(stmts)
+    }
+
+    fn assemble(&self, stmts: Vec<Statement>) -> Result<Vec<u32>, ParseErr> {
+        let mut ret: Vec<u32> = Vec::new();
 
         for Statement {
             inst,
@@ -189,7 +194,7 @@ impl Parser {
                 (0, 2) => encode_rrx(inst.opcode, 0, src1, inst.modbits, src2),
                 (0, 1) => encode_offset(inst.opcode, self.get_label_pos(src2)?, ret.len()),
                 (0, 0) => encode_rrx(inst.opcode, 0, 0, 0, Operand::Reg(0)),
-                (_, _) => panic!("If you are seeing this then RUN!"),
+                (_, _) => panic!("Parser.parse encoder: If you are seeing this then RUN!"),
             };
             ret.push(tmp);
         }
@@ -222,7 +227,7 @@ impl Parser {
 
             return match c {
                 '+' | '-' | '0'..='9' => immediate(&mut self.citer),
-                c if c.is_ascii_alphabetic() => identifier(&mut self.citer),
+                c if is_ident_char(&c) => identifier(&mut self.citer),
                 c => {
                     self.citer.next();
                     Ok(Token::Char(c))
@@ -234,7 +239,7 @@ impl Parser {
 
     fn statement(&mut self, inst: Instruction) -> Result<Statement, ParseErr> {
         let (mut dst, mut src1, mut src2) = (0u8, 0u8, Operand::Reg(0));
-        let is_ldst = [opcodes::LD, opcodes::ST].contains(&inst.opcode);
+        let is_ldst = matches!(inst.opcode, opcodes::LD | opcodes::ST);
         // Label only instructions take only one source and no destination
         let is_op2_label = inst.ndst == 0 && inst.nsrc == 1;
 
@@ -246,7 +251,7 @@ impl Parser {
                 self.next_tok()?.try_the_char(',')?;
             }
         }
-        // := imm[reg]
+        // := imm '[' reg ']'
         if is_ldst {
             src2 = Operand::Imm(self.next_tok()?.try_imm()?);
             self.next_tok()?.try_the_char('[')?;
@@ -260,29 +265,32 @@ impl Parser {
         // := reg
         //  | imm
         else if inst.nsrc == 1 {
-            let tmp = self.next_tok()?;
-            if let Token::Reg(reg) = tmp {
-                src2 = Operand::Reg(reg);
-            } else if let Token::Imm(imm) = tmp {
-                src2 = Operand::Imm(imm)
-            } else {
-                return Err(ParseErr::OperandExpected);
-            }
+            src2 = match self.next_tok()? {
+                Token::Reg(reg) => Operand::Reg(reg),
+                Token::Imm(imm) => Operand::Imm(imm),
+                _ => return Err(ParseErr::OperandExpected),
+            };
         }
         // := reg ',' reg
         //  | reg ',' imm
         else if inst.nsrc == 2 {
             src1 = self.next_tok()?.try_reg()?;
             self.next_tok()?.try_the_char(',')?;
-            let tmp = self.next_tok()?;
-            if let Token::Reg(reg) = tmp {
-                src2 = Operand::Reg(reg);
-            } else if let Token::Imm(imm) = tmp {
-                src2 = Operand::Imm(imm)
-            } else {
-                return Err(ParseErr::OperandExpected);
+            src2 = match self.next_tok()? {
+                Token::Reg(reg) => Operand::Reg(reg),
+                Token::Imm(imm) => Operand::Imm(imm),
+                _ => return Err(ParseErr::OperandExpected),
+            };
+        }
+        // If no immediate operand and modifier is present, then illegal
+        if let Operand::Imm(_) = src2 {
+            // Immediate operand, fine
+        } else {
+            if inst.modbits != info::MOD_DEF {
+                return Err(ParseErr::IllegalModifier);
             }
         }
+        // Each statement is terminated by a newline
         self.next_tok()?.try_the_char('\n')?;
         self.stmt_cnt += 1;
 
@@ -382,8 +390,12 @@ fn immediate(citer: &mut Scanner) -> Result<Token, ParseErr> {
     Ok(Token::Imm(num))
 }
 
+fn is_ident_char(c: &char) -> bool {
+    c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | '$')
+}
+
 fn identifier(citer: &mut Scanner) -> Result<Token, ParseErr> {
-    let ident = collect_chars_while(citer, |&c| c.is_ascii_alphanumeric() || c == '_');
+    let ident = collect_chars_while(citer, is_ident_char);
     // Can be a register name or instruction name
     if let Some(&reg) = REGISTERS.iter().find(|&&reg| reg.0 == ident) {
         return Ok(Token::Reg(reg.1));
@@ -396,15 +408,17 @@ fn identifier(citer: &mut Scanner) -> Result<Token, ParseErr> {
     Ok(Token::Ident(ident))
 }
 
-fn instruction(mut iname: &str) -> Result<Token, ParseErr> {
-    let mut modbits: u8 = info::MOD_DEF;
+fn instruction(mut instr: &str) -> Result<Token, ParseErr> {
+    let modbits: u8;
 
-    if iname.ends_with('u') {
-        iname = iname.strip_suffix('u').unwrap();
+    if instr.ends_with('u') {
+        instr = instr.strip_suffix('u').unwrap();
         modbits = info::MOD_U;
-    } else if iname.ends_with('h') {
-        iname = iname.strip_suffix('h').unwrap();
+    } else if instr.ends_with('h') {
+        instr = instr.strip_suffix('h').unwrap();
         modbits = info::MOD_H;
+    } else {
+        modbits = info::MOD_DEF;
     }
 
     for Instruction {
@@ -413,15 +427,14 @@ fn instruction(mut iname: &str) -> Result<Token, ParseErr> {
         ndst,
         nsrc,
         modbits: _,
-    } in INSTRUCTIONS
+    } in info::INSTRUCTIONS
     {
-        if iname != name {
+        if instr != name {
             continue;
         }
-        // Immediate modifiers are supported only for instructions with
-        // opcode 12 or less(before NOP)
-        if modbits != info::MOD_DEF && opcode >= opcodes::NOP {
-            return Err(ParseErr::InvalidModifier);
+        // Modifiers are supported only by ALU(except shift) and mov instructions
+        if modbits != info::MOD_DEF && !info::support_mod(opcode) {
+            return Err(ParseErr::IllegalModifier);
         }
 
         return Ok(Token::Inst(Instruction {
@@ -483,7 +496,7 @@ mod tests {
             }))
         );
         // Invalid ones
-        assert_eq!(instruction("nopu"), Err(ParseErr::InvalidModifier));
+        assert_eq!(instruction("nopu"), Err(ParseErr::IllegalModifier));
         assert_eq!(instruction("nosuchins"), Err(ParseErr::NoMatch));
     }
 }
