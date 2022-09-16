@@ -26,7 +26,7 @@ sys is a 0-address instruction.
 
 It uses the following registers for argument passing and return values:
 Sycall number : r0
-Argument[1-6] : r[1-6]
+Argument[1-4] : r[1-4]
 Return value  : r0
 
 Information about system calls is documented in the simpleRISC.md file

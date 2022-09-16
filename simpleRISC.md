@@ -31,6 +31,10 @@ No spaces are allowed in between.
 | `0o`   | 8    |
 | `0b`   | 2    |
 
+### Identifiers(labels)
+An identifier is a sequence of a alphanumeric, and `$`(dollar), `_`(underscore) and `.`(period) characters.  
+The first character cannot be a digit.
+
 Registers
 ---
 Registers `r[0-15]` are directly accessible to the user.  
@@ -40,16 +44,18 @@ Registers `r[0-15]` are directly accessible to the user.
 `flags` register used for storing result of the `cmp` instruction.  
 It has two fields `flags.E` and `flags.GT`.
 
-The program counter `pc` stores the current instruction being executed.  
-If `pc < 0 or pc >= TOTAL_INSTRUCTIONS`, then the execution stops normally.
+The program counter `pc` stores index of the instruction being executed.  
+Valid values for `pc` lie in the interval `[0, TOTAL_INSTRUCTION_COUNT)`  
+If `pc` becomes invalid then the program execution stops normally.
 
 Registers `flags` and `pc` are not directly accesible to the user.
 
 
 Instructions
 ---
-For brevity first operand is denoted as `A`, second as `B` and third as `C`.  
+First operand is denoted by `A`, second by `B` and third by `C`.  
 First operand is always the destination register(except for `st` instruction).  
+For `ld` and `st` instructions effective memory address must be aligned to 4 bytes.  
 Only the lower 5 bits of the third operand are considered for
 shift instructions(`lsl`, `lsr` and `asr`).
 
@@ -98,15 +104,13 @@ Some (maybe)useful extensions to **simpleRISC**
 
 The value returned from the syscall is stored in `r0`.  
 The `r0` contains the syscall number.  
-Arguments(max 6) as passed via registers as: 
+Arguments(max 4) as passed via registers as: 
 | Argument | Register |
 | :------: | :------: |
 |  Arg-1   |   `r1`   |
 |  Arg-2   |   `r2`   |
 |  Arg-3   |   `r3`   |
 |  Arg-4   |   `r4`   |
-|  Arg-5   |   `r5`   |
-|  Arg-6   |   `r6`   |
 
 Rest of the registers are preserved.
 
