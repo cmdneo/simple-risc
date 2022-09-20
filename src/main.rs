@@ -1,17 +1,15 @@
 use simple_risc::emulator::Emulator;
-use simple_risc::parser::Parser;
+use simple_risc::parser::parse_code;
 use std::{env::args, process::exit};
 
 fn main() {
     let code: String;
     if let Some(p) = args().nth(1) {
         let path = std::path::Path::new(&p);
-        if let Ok(txt) = std::fs::read_to_string(path) {
-            code = txt;
-        } else {
-            eprintln!("Cannot read file!");
+        code = std::fs::read_to_string(path).unwrap_or_else(|err| {
+            eprintln!("Cannot read file: {}", err);
             exit(1);
-        }
+        });
     } else {
         eprintln!(
             "Usage: {} <filepath>",
@@ -20,22 +18,14 @@ fn main() {
         exit(1);
     }
 
-    let instructions: Vec<u32>;
-    let mut asm = Parser::from(&code);
-    match asm.parse() {
-        Ok(bins) => {
-            println!("Parsed successfully.");
-            instructions = bins;
-        }
-        Err(err) => {
-            asm.print_err(err);
-            exit(1)
-        }
-    }
-    let mut emul = Emulator::from(&instructions);
-    if let Err(e) = emul.exec() {
-        eprintln!("Error: {:?}", e);
+    let instructions = parse_code(&code).unwrap_or_else(|err| {
+        eprintln!("[ERROR] {}", err);
         exit(1);
-    }
+    });
+    let mut emul = Emulator::new(&instructions);
+    emul.exec().unwrap_or_else(|err| {
+        eprintln!("[ERROR] {}", err);
+        exit(1);
+    });
     emul.debug();
 }

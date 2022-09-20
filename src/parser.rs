@@ -1,5 +1,5 @@
-use crate::info::{self, opcodes, Instruction};
-use std::{collections::HashMap, num::IntErrorKind};
+use crate::info::{self, bits, opcodes, Instruction};
+use std::{collections::HashMap, fmt, num::IntErrorKind};
 
 const REGISTERS: [(&str, u8); 17] = [
     ("r0", 0),
@@ -21,7 +21,7 @@ const REGISTERS: [(&str, u8); 17] = [
     ("r15", 15),
 ];
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Eq)]
 enum Token {
     Eof,
     Ident(String),
@@ -32,54 +32,83 @@ enum Token {
 }
 
 #[derive(Debug, PartialEq, Eq)]
-pub enum ParseErr {
-    NoMatch,
-    NoMainFound,
+pub struct ParseErr {
+    kind: ErrKind,
+    line: usize,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum ErrKind {
     IllegalModifier,
-    ImmediateOverflow,
-    InvalidImmediate,
-    UnexpectedToken,
+    ImmOverflow,
+    InvalidImm,
+    IllegalToken(Token),
+    RegExp,
+    ImmExp,
+    OperandExp,
+    IdentExp,
+    CharExp(char),
     DuplicateLabel(String),
     UndefinedLabel(String),
-    RegisterExpected,
-    ImmediateExpected,
-    OperandExpected,
-    IdentifierExpected,
-    CharExpected(char),
+}
+
+impl std::error::Error for ParseErr {}
+
+impl fmt::Display for ParseErr {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match &self.kind {
+            ErrKind::UndefinedLabel(_) => write!(f, ""),
+            _ => write!(f, "On line {}: ", self.line),
+        }?;
+
+        match &self.kind {
+            ErrKind::IllegalModifier => write!(f, "Modifier not allowed"),
+            ErrKind::ImmOverflow => write!(f, "Immediate out of range(overflow)"),
+            ErrKind::InvalidImm => write!(f, "Invalid immediate"),
+            ErrKind::IllegalToken(tok) => write!(f, "Token '{:?}' not expected by any rule", tok),
+            ErrKind::RegExp => write!(f, "Register Expected"),
+            ErrKind::ImmExp => write!(f, "Immediate Expected"),
+            ErrKind::OperandExp => write!(f, "Immediate or register expected"),
+            ErrKind::IdentExp => write!(f, "Label expected"),
+            ErrKind::CharExp(c) => write!(f, "Character '{}' expected", c),
+            ErrKind::DuplicateLabel(s) => write!(f, "Duplicate label '{}'", s),
+            ErrKind::UndefinedLabel(s) => write!(f, "Label not found '{}'", s),
+        }
+    }
 }
 
 impl Token {
-    fn try_imm(self) -> Result<u16, ParseErr> {
+    fn try_imm(self) -> Result<u16, ErrKind> {
         if let Self::Imm(imm) = self {
             Ok(imm)
         } else {
-            Err(ParseErr::ImmediateExpected)
+            Err(ErrKind::ImmExp)
         }
     }
 
-    fn try_reg(self) -> Result<u8, ParseErr> {
+    fn try_reg(self) -> Result<u8, ErrKind> {
         if let Self::Reg(reg) = self {
             Ok(reg)
         } else {
-            Err(ParseErr::RegisterExpected)
+            Err(ErrKind::RegExp)
         }
     }
 
-    fn try_ident(self) -> Result<String, ParseErr> {
+    fn try_ident(self) -> Result<String, ErrKind> {
         if let Self::Ident(ident) = self {
             Ok(ident)
         } else {
-            Err(ParseErr::IdentifierExpected)
+            Err(ErrKind::IdentExp)
         }
     }
 
-    fn try_the_char(self, mc: char) -> Result<char, ParseErr> {
+    fn try_the_char(self, mc: char) -> Result<char, ErrKind> {
         if let Self::Char(c) = self {
             if c == mc {
                 return Ok(mc);
             }
         }
-        Err(ParseErr::CharExpected(mc))
+        Err(ErrKind::CharExp(mc))
     }
 }
 
@@ -90,7 +119,6 @@ enum Operand {
     Reg(u8),
 }
 
-#[derive(Debug, PartialEq)]
 struct Statement {
     inst: Instruction,
     dst: u8,
@@ -98,64 +126,87 @@ struct Statement {
     src2: Operand,
 }
 
-struct Scanner {
-    chars: Vec<char>,
+struct Scanner<'a> {
+    left: &'a str,
     cursor: usize,
     line: usize,
+    col: usize,
 }
 
-impl Scanner {
-    fn from(input: &str) -> Self {
-        Self {
-            chars: input.chars().collect(),
+impl<'a> Scanner<'a> {
+    pub fn new(input: &'a str) -> Self {
+        Scanner {
+            left: input,
             cursor: 0,
             line: 1,
+            col: 1,
         }
     }
 
-    fn peek(&self) -> Option<&char> {
-        self.chars.get(self.cursor)
-    }
+    /// Consume the input until `pred` evaluates to true and return the consumed part
+    pub fn take_while(&mut self, pred: impl Fn(char) -> bool) -> &'a str {
+        let ret;
+        let mut end = 0usize;
 
-    fn peekn(&self, n: usize) -> Option<&char> {
-        self.chars.get(self.cursor + n)
-    }
-
-    fn next(&mut self) -> Option<&char> {
-        if let Some('\n') = self.peek() {
-            self.line += 1
+        for (i, ch) in self.left.char_indices() {
+            if pred(ch) {
+                end = i + ch.len_utf8();
+            } else {
+                break;
+            }
+            self.update_cursor(ch)
         }
+        (ret, self.left) = self.left.split_at(end);
+        ret
+    }
+
+    /// Returns the first char without consuming input
+    pub fn peek(&self) -> Option<char> {
+        self.peekn(0)
+    }
+
+    /// Returns the nth char without consuming input
+    pub fn peekn(&self, n: usize) -> Option<char> {
+        self.left.chars().nth(n)
+    }
+
+    /// Consume the character and return it
+    pub fn next(&mut self) -> Option<char> {
+        let mut iter = self.left.chars();
+        let ret = iter.next();
+        self.left = iter.as_str();
+        ret
+    }
+
+    fn update_cursor(&mut self, ch: char) {
         self.cursor += 1;
-        self.chars.get(self.cursor - 1)
+        self.col += 1;
+        if ch == '\n' {
+            self.line += 1;
+            self.col = 0;
+        }
     }
 }
 
-pub struct Parser {
-    citer: Scanner,
-    stmt_cnt: usize,
+struct Parser<'a> {
+    citer: Scanner<'a>,
     labels: HashMap<String, usize>,
+    stmt_cnt: usize,
 }
-
-impl Parser {
-    pub fn from(code: &str) -> Self {
+impl<'a> Parser<'a> {
+    pub fn new(code: &'a str) -> Self {
         Self {
-            citer: Scanner::from(code),
+            citer: Scanner::new(code),
             labels: HashMap::new(),
             stmt_cnt: 0,
         }
     }
 
-    pub fn print_err(&mut self, err: ParseErr) {
-        match err {
-            // Not detected at parse time, so no info about line & col
-            ParseErr::UndefinedLabel(_) => {
-                eprintln!("Error: {:?}", err)
-            }
-            _ => eprintln!("Error on line {}: {:?}", self.citer.line, err),
-        }
+    pub fn line_num(&self) -> usize {
+        self.citer.line
     }
 
-    pub fn parse(&mut self) -> Result<Vec<u32>, ParseErr> {
+    pub fn parse(&mut self) -> Result<Vec<u32>, ErrKind> {
         let mut stmts: Vec<Statement> = Vec::new();
 
         loop {
@@ -163,22 +214,20 @@ impl Parser {
                 Token::Ident(ident) => {
                     self.next_tok()?.try_the_char(':')?;
                     if self.labels.contains_key(&ident) {
-                        return Err(ParseErr::DuplicateLabel(ident));
+                        return Err(ErrKind::DuplicateLabel(ident));
                     }
                     self.labels.insert(ident, self.stmt_cnt);
                 }
-                Token::Inst(inst) => {
-                    stmts.push(self.statement(inst)?);
-                }
+                Token::Inst(inst) => stmts.push(self.make_statement(inst)?),
                 Token::Char('\n') => { /* Ignore extra newlines */ }
                 Token::Eof => break,
-                _ => return Err(ParseErr::UnexpectedToken),
+                tok => return Err(ErrKind::IllegalToken(tok)),
             };
         }
         self.assemble(stmts)
     }
 
-    fn assemble(&self, stmts: Vec<Statement>) -> Result<Vec<u32>, ParseErr> {
+    fn assemble(&self, stmts: Vec<Statement>) -> Result<Vec<u32>, ErrKind> {
         let mut ret: Vec<u32> = Vec::new();
 
         for Statement {
@@ -189,36 +238,34 @@ impl Parser {
         } in stmts
         {
             let tmp = match (inst.ndst, inst.nsrc) {
-                (1, 2) => encode_rrx(inst.opcode, dst, src1, inst.modbits, src2),
-                (1, 1) => encode_rrx(inst.opcode, dst, 0, inst.modbits, src2),
-                (0, 2) => encode_rrx(inst.opcode, 0, src1, inst.modbits, src2),
-                (0, 1) => encode_offset(inst.opcode, self.get_label_pos(src2)?, ret.len()),
-                (0, 0) => encode_rrx(inst.opcode, 0, 0, 0, Operand::Reg(0)),
-                (_, _) => panic!("Parser.parse encoder: If you are seeing this then RUN!"),
+                (1, 2) | (1, 1) | (0, 2) => encode_rrx(inst.opcode, dst, src1, inst.modbits, src2),
+                (0, 1) => encode_label(inst.opcode, self.get_label_index(src2)?, ret.len()),
+                (0, 0) => (inst.opcode as u32) << bits::OPCODE_OFF,
+                (_, _) => panic!("Unsupported addressing mode for '{}'", inst.name),
             };
             ret.push(tmp);
         }
         Ok(ret)
     }
 
-    fn get_label_pos(&self, label_op: Operand) -> Result<usize, ParseErr> {
+    fn get_label_index(&self, label_op: Operand) -> Result<usize, ErrKind> {
         if let Operand::Label(ident) = label_op {
             if let Some(&label_at) = self.labels.get(&ident) {
                 Ok(label_at)
             } else {
-                Err(ParseErr::UndefinedLabel(ident))
+                Err(ErrKind::UndefinedLabel(ident))
             }
         } else {
             panic!("Non-label operand passed to get_label_pos");
         }
     }
 
-    fn next_tok(&mut self) -> Result<Token, ParseErr> {
-        while let Some(&c) = self.citer.peek() {
+    fn next_tok(&mut self) -> Result<Token, ErrKind> {
+        while let Some(c) = self.citer.peek() {
             if c == '\t' || c == ' ' || c == '@' {
                 // If a comment then skip to the end of the line
                 if c == '@' {
-                    collect_chars_while(&mut self.citer, |&c| c != '\n');
+                    self.citer.take_while(|c| c != '\n');
                 } else {
                     self.citer.next();
                 }
@@ -227,7 +274,7 @@ impl Parser {
 
             return match c {
                 '+' | '-' | '0'..='9' => immediate(&mut self.citer),
-                c if is_ident_char(&c) => identifier(&mut self.citer),
+                c if is_ident_char(c) => identifier(&mut self.citer),
                 c => {
                     self.citer.next();
                     Ok(Token::Char(c))
@@ -237,7 +284,7 @@ impl Parser {
         Ok(Token::Eof)
     }
 
-    fn statement(&mut self, inst: Instruction) -> Result<Statement, ParseErr> {
+    fn make_statement(&mut self, inst: Instruction) -> Result<Statement, ErrKind> {
         let (mut dst, mut src1, mut src2) = (0u8, 0u8, Operand::Reg(0));
         let is_ldst = matches!(inst.opcode, opcodes::LD | opcodes::ST);
         // Label only instructions take only one source and no destination
@@ -268,7 +315,7 @@ impl Parser {
             src2 = match self.next_tok()? {
                 Token::Reg(reg) => Operand::Reg(reg),
                 Token::Imm(imm) => Operand::Imm(imm),
-                _ => return Err(ParseErr::OperandExpected),
+                _ => return Err(ErrKind::OperandExp),
             };
         }
         // := reg ',' reg
@@ -279,16 +326,14 @@ impl Parser {
             src2 = match self.next_tok()? {
                 Token::Reg(reg) => Operand::Reg(reg),
                 Token::Imm(imm) => Operand::Imm(imm),
-                _ => return Err(ParseErr::OperandExpected),
+                _ => return Err(ErrKind::OperandExp),
             };
         }
-        // If no immediate operand and modifier is present, then illegal
+        // If operand is not immediate and modifier is present, then error
         if let Operand::Imm(_) = src2 {
-            // Immediate operand, fine
-        } else {
-            if inst.modbits != info::MOD_DEF {
-                return Err(ParseErr::IllegalModifier);
-            }
+            // Operand is immediate, fine
+        } else if inst.modbits != bits::MOD_DEF {
+            return Err(ErrKind::IllegalModifier);
         }
         // Each statement is terminated by a newline
         self.next_tok()?.try_the_char('\n')?;
@@ -303,122 +348,106 @@ impl Parser {
     }
 }
 
+/// Encodes the format `inst reg, reg, reg|imm`
 fn encode_rrx(opcode: u8, dst: u8, src1: u8, modbits: u8, src2: Operand) -> u32 {
     match src2 {
         Operand::Reg(regs2) => {
-            (opcode as u32) << info::OPCODE_OFF
-                | (dst as u32) << info::DST_OFF
-                | (src1 as u32) << info::SRC1_OFF
-                | (regs2 as u32) << info::SRC2_OFF
+            (opcode as u32) << bits::OPCODE_OFF
+                | (dst as u32) << bits::DST_OFF
+                | (src1 as u32) << bits::SRC1_OFF
+                | (regs2 as u32) << bits::SRC2_OFF
         }
         Operand::Imm(imm) => {
-            (opcode as u32) << info::OPCODE_OFF
-                | 1 << info::IMMBIT_OFF
-                | (dst as u32) << info::DST_OFF
-                | (src1 as u32) << info::SRC1_OFF
-                | (modbits as u32) << info::MOD_OFF
+            (opcode as u32) << bits::OPCODE_OFF
+                | 1 << bits::IMMBIT_OFF
+                | (dst as u32) << bits::DST_OFF
+                | (src1 as u32) << bits::SRC1_OFF
+                | (modbits as u32) << bits::MOD_OFF
                 | (imm as u32)
         }
         Operand::Label(_) => panic!("This function cannot encode Operand::Label types"),
     }
 }
 
-fn encode_offset(opcode: u8, label_at: usize, cur_at: usize) -> u32 {
+/// Encodes the format `inst label`
+fn encode_label(opcode: u8, label_at: usize, cur_at: usize) -> u32 {
     let offset = (label_at as i32 - cur_at as i32) as u32;
-    (opcode as u32) << info::OPCODE_OFF | (offset & (!0u32 >> info::OPCODE_BITS))
+    (opcode as u32) << bits::OPCODE_OFF | (offset & (!0u32 >> bits::OPCODE_BITS))
 }
 
-/// take_while consumes an extra character at last so..., use this
-fn collect_chars_while(citer: &mut Scanner, pred: fn(ch: &char) -> bool) -> String {
-    let mut ret = String::new();
-    while let Some(&ch) = citer.peek() {
-        if pred(&ch) {
-            ret.push(ch);
-            citer.next();
-        } else {
-            break;
-        }
-    }
-    ret
-}
-
-fn immediate(citer: &mut Scanner) -> Result<Token, ParseErr> {
+fn immediate(scn: &mut Scanner) -> Result<Token, ErrKind> {
     let mut base = 10;
     let mut is_neg = false;
     let num: u16;
 
-    match citer.peek() {
-        Some(&c) if c == '+' || c == '-' => {
-            citer.next();
+    if let Some(c) = scn.peek() {
+        if c == '+' || c == '-' {
+            scn.next();
             is_neg = c == '-';
         }
-        _ => {}
     }
-    if let Some('0') = citer.peek() {
-        match citer.peekn(1) {
+    if let Some('0') = scn.peek() {
+        match scn.peekn(1) {
             Some('x') => base = 16,
             Some('o') => base = 8,
             Some('b') => base = 2,
             _ => {}
         }
         if base != 10 {
-            citer.next();
-            citer.next();
+            scn.next();
+            scn.next();
         }
     }
 
-    let num_str = collect_chars_while(citer, char::is_ascii_alphanumeric);
-    match u16::from_str_radix(num_str.as_str(), base) {
+    let num_str = scn.take_while(|c| c.is_ascii_alphanumeric());
+    match u16::from_str_radix(num_str, base) {
         Ok(ntmp) => {
             num = ntmp;
         }
         Err(e) => match e.kind() {
-            IntErrorKind::NegOverflow | IntErrorKind::PosOverflow => {
-                return Err(ParseErr::ImmediateOverflow)
-            }
-            // Also handles if string is empty
-            _ => return Err(ParseErr::InvalidImmediate),
+            IntErrorKind::PosOverflow => return Err(ErrKind::ImmOverflow),
+            _ => return Err(ErrKind::InvalidImm),
         },
     }
     if is_neg {
         // Check for overflow and then convert to 2's Complement representation
         if num > std::i16::MIN.unsigned_abs() {
-            return Err(ParseErr::ImmediateOverflow);
+            return Err(ErrKind::ImmOverflow);
         }
         return Ok(Token::Imm(!num + 1));
     }
     Ok(Token::Imm(num))
 }
 
-fn is_ident_char(c: &char) -> bool {
+fn is_ident_char(c: char) -> bool {
     c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | '$')
 }
 
-fn identifier(citer: &mut Scanner) -> Result<Token, ParseErr> {
-    let ident = collect_chars_while(citer, is_ident_char);
+fn identifier(citer: &mut Scanner) -> Result<Token, ErrKind> {
+    let ident = citer.take_while(is_ident_char);
     // Can be a register name or instruction name
     if let Some(&reg) = REGISTERS.iter().find(|&&reg| reg.0 == ident) {
         return Ok(Token::Reg(reg.1));
     }
     match instruction(&ident) {
-        Ok(tok) => return Ok(tok),
-        Err(ParseErr::NoMatch) => { /* Nothing matched, move on */ }
+        Ok(Some(tok)) => return Ok(tok),
+        Ok(None) => {}
         Err(e) => return Err(e),
     }
-    Ok(Token::Ident(ident))
+    Ok(Token::Ident(String::from(ident)))
 }
 
-fn instruction(mut instr: &str) -> Result<Token, ParseErr> {
+fn instruction(mut instr: &str) -> Result<Option<Token>, ErrKind> {
     let modbits: u8;
 
     if instr.ends_with('u') {
         instr = instr.strip_suffix('u').unwrap();
-        modbits = info::MOD_U;
+        modbits = bits::MOD_U;
     } else if instr.ends_with('h') {
         instr = instr.strip_suffix('h').unwrap();
-        modbits = info::MOD_H;
+        modbits = bits::MOD_H;
     } else {
-        modbits = info::MOD_DEF;
+        modbits = bits::MOD_DEF;
     }
 
     for Instruction {
@@ -432,44 +461,67 @@ fn instruction(mut instr: &str) -> Result<Token, ParseErr> {
         if instr != name {
             continue;
         }
-        // Modifiers are supported only by ALU(except shift) and mov instructions
-        if modbits != info::MOD_DEF && !info::support_mod(opcode) {
-            return Err(ParseErr::IllegalModifier);
+        if modbits != bits::MOD_DEF && !info::supports_mod(opcode) {
+            return Err(ErrKind::IllegalModifier);
         }
 
-        return Ok(Token::Inst(Instruction {
+        return Ok(Some(Token::Inst(Instruction {
             name,
             opcode,
             ndst,
             nsrc,
             modbits,
-        }));
+        })));
     }
 
-    Err(ParseErr::NoMatch)
+    Ok(None)
+}
+
+pub fn parse_code(input: &str) -> Result<Vec<u32>, ParseErr> {
+    let mut asm = Parser::new(input);
+    match asm.parse() {
+        Ok(ret) => Ok(ret),
+        Err(kind) => Err(ParseErr {
+            line: asm.line_num(),
+            kind,
+        }),
+    }
 }
 
 #[cfg(test)]
 mod tests {
+    use crate::parser::parse_code;
+
+    use super::bits;
     use super::immediate;
     use super::instruction;
+    use super::ErrKind;
     use super::Instruction;
-    use super::ParseErr;
+    use super::Parser;
     use super::Scanner;
     use super::Token;
 
     #[test]
+    fn test_scanner() {
+        let mut s = Scanner::new("1234YYXXX");
+        assert_eq!(s.peek(), Some('1'));
+        assert_eq!(s.take_while(|ch| ch.is_numeric()), "1234");
+        assert_eq!(s.take_while(|ch| ch == 'Y'), "YY");
+        assert_eq!(s.take_while(|ch| ch == 'X'), "XXX");
+    }
+
+    #[test]
     fn imm_test() {
-        let test_pairs: [(&str, Result<Token, ParseErr>); 6] = [
+        let test_pairs: [(&str, Result<Token, ErrKind>); 6] = [
             ("42", Ok(Token::Imm(42))),
             ("0", Ok(Token::Imm(0))),
             ("-42", Ok(Token::Imm(!42 + 1))),
             ("-0x69", Ok(Token::Imm(!0x69 + 1))),
-            ("0x1FFFF", Err(ParseErr::ImmediateOverflow)),
-            ("0x1oops", Err(ParseErr::InvalidImmediate)),
+            ("0x1FFFF", Err(ErrKind::ImmOverflow)),
+            ("0x1oops", Err(ErrKind::InvalidImm)),
         ];
         for (test, res) in test_pairs {
-            assert_eq!(immediate(&mut Scanner::from(test)), res);
+            assert_eq!(immediate(&mut Scanner::new(test)), res);
         }
     }
 
@@ -477,26 +529,71 @@ mod tests {
     fn instruction_test() {
         assert_eq!(
             instruction("add"),
-            Ok(Token::Inst(Instruction {
+            Ok(Some(Token::Inst(Instruction {
                 name: "add",
                 opcode: 0,
                 ndst: 1,
                 nsrc: 2,
-                modbits: super::info::MOD_DEF,
-            }))
+                modbits: bits::MOD_DEF,
+            })))
         );
         assert_eq!(
             instruction("addh"),
-            Ok(Token::Inst(Instruction {
+            Ok(Some(Token::Inst(Instruction {
                 name: "add",
                 opcode: 0,
                 ndst: 1,
                 nsrc: 2,
-                modbits: super::info::MOD_H,
-            }))
+                modbits: bits::MOD_H,
+            })))
         );
         // Invalid ones
-        assert_eq!(instruction("nopu"), Err(ParseErr::IllegalModifier));
-        assert_eq!(instruction("nosuchins"), Err(ParseErr::NoMatch));
+        assert_eq!(instruction("nopu"), Err(ErrKind::IllegalModifier));
+        assert_eq!(instruction("nosuchins"), Ok(None));
+    }
+
+    #[test]
+    fn test_fine() {
+        // Test only for first instruction
+        let test_pairs: [(&str, u32); 4] = [
+            ("mov r0, -0x1\n", 0b01001_1_0000_0000_00_1111111111111111),
+            ("add r0, r1, r2\n", 0b00000_0_0000_0001_0010 << 14),
+            (
+                "add r0, r1, 0b1101\n",
+                0b00000_1_0000_0001_00_0000000000001101,
+            ),
+            (
+                "b has_label\n ret\n ret\n has_label: ret\n",
+                0b10010_000000000000000000000000011,
+            ),
+        ];
+        for (input, res) in test_pairs {
+            assert_eq!(Parser::new(input).parse().unwrap()[0], res);
+        }
+    }
+
+    #[test]
+    fn test_bad() {
+        let test_pairs: [(&str, ErrKind); 10] = [
+            ("add r0, r1", ErrKind::CharExp(',')),
+            ("add r0, r1, r4", ErrKind::CharExp('\n')),
+            ("add r0, r1, \n", ErrKind::OperandExp),
+            ("addh r0, r1, r2 \n", ErrKind::IllegalModifier),
+            ("noph\n", ErrKind::IllegalModifier),
+            ("b r0\n", ErrKind::IdentExp),
+            ("cmp 24, 88\n", ErrKind::RegExp),
+            ("r13 add r11\n", ErrKind::IllegalToken(Token::Reg(13))),
+            (
+                "b undefme\n",
+                ErrKind::UndefinedLabel(String::from("undefme")),
+            ),
+            (
+                "abc:\n\n abc: ret\n",
+                ErrKind::DuplicateLabel(String::from("abc")),
+            ),
+        ];
+        for (input, err) in test_pairs {
+            assert_eq!(parse_code(input).unwrap_err().kind, err);
+        }
     }
 }

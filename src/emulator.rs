@@ -1,14 +1,14 @@
 //! Implements a basic (maybe working) emulator for simpleRISC.
 //! It uses 2's complement wrap-around arithmetic for all calculations.
 
-use crate::info::{self, opcodes::*};
+use crate::info::{self, bits::*, opcodes::*};
 use std::{
+    fmt::{self, write},
     io::{Read, Write},
     num::Wrapping,
 };
 
 const MEM_WORD_MAX: usize = 4096;
-
 struct UnpackedIns {
     dst_reg: usize,
     src1: Wrapping<i32>,
@@ -40,6 +40,19 @@ pub enum EmulatorErr {
     UnalignedMemAddr,
 }
 
+impl fmt::Display for EmulatorErr {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match self {
+            Self::InvalidModbits => write!(f, "Invalid immediate modifier bits"),
+            Self::InvalidMemAddr => write!(f, "Memory address out of range"),
+            Self::InvalidOpcode => write!(f, "Non-existent instruction"),
+            Self::InvalidSyscall => write!(f, "Invalid syscall number/arguments"),
+            Self::DivideByZero => write!(f, "Divide by 0 error"),
+            Self::UnalignedMemAddr => write!(f, "Memory address not aligned by 4 bytes"),
+        }
+    }
+}
+
 fn get_bits(bits: u32, n: u8, offset: u8) -> u32 {
     (bits >> offset) & (!0u32 >> (32 - n))
 }
@@ -53,7 +66,7 @@ fn sign_extend(num: u32, nbits: u8) -> i32 {
 }
 
 impl<'a> Emulator<'a> {
-    pub fn from(instructions: &'a [u32]) -> Self {
+    pub fn new(instructions: &'a [u32]) -> Self {
         Self {
             regs: [Wrapping(0); 16],
             wmemory: [Wrapping(0); 4096],
@@ -76,13 +89,13 @@ impl<'a> Emulator<'a> {
 
     pub fn exec(&mut self) -> Result<(), EmulatorErr> {
         while self.prog_cnt >= 0 && (self.prog_cnt as usize) < self.instructions.len() {
-            self.prog_cnt = self.exec_ins(self.instructions[self.prog_cnt as usize])?;
+            self.prog_cnt = self.exec_inst(self.instructions[self.prog_cnt as usize])?;
         }
         Ok(())
     }
 
     /// Executes the instruction contained in `bits` and returns the new `pc`
-    fn exec_ins(&mut self, bits: u32) -> Result<i32, EmulatorErr> {
+    fn exec_inst(&mut self, inst: u32) -> Result<i32, EmulatorErr> {
         let UnpackedIns {
             mut dst_reg,
             src1,
@@ -90,7 +103,7 @@ impl<'a> Emulator<'a> {
             memaddr,
             new_pc,
             mut opcode,
-        } = self.decode_fetch(bits)?;
+        } = self.decode(inst)?;
 
         // Modify and verify fields as needed
         match opcode {
@@ -141,6 +154,7 @@ impl<'a> Emulator<'a> {
                 return Err(EmulatorErr::InvalidOpcode);
             }
         };
+
         Ok(self.prog_cnt + 1)
     }
 
@@ -151,42 +165,36 @@ impl<'a> Emulator<'a> {
         if memaddr % 4 != 0 {
             return Err(EmulatorErr::UnalignedMemAddr);
         }
-        // A word is 4 bytes
+        // A word(i32) is 4 bytes
         let word_idx = (memaddr as usize) / 4;
-        if word_idx >= MEM_WORD_MAX {
+        if word_idx >= self.wmemory.len() {
             return Err(EmulatorErr::InvalidMemAddr);
         }
         Ok(word_idx)
     }
 
-    fn decode_fetch(&self, bits: u32) -> Result<UnpackedIns, EmulatorErr> {
+    fn decode(&self, inst: u32) -> Result<UnpackedIns, EmulatorErr> {
         // See src/info.rs for more info
-        let opcode = get_bits(bits, info::OPCODE_BITS, info::OPCODE_OFF) as u8;
-        // Branch instructions cannot have immediates(their encoding is different),
-        // so is_imm is always false for them
-        let is_imm = match opcode {
-            B | BEQ | BGT | CALL | RET => false,
-            _ => get_bits(bits, info::IMMBIT_BITS, info::IMMBIT_OFF) == 1,
-        };
-        let modbits = get_bits(bits, info::MOD_BITS, info::MOD_OFF) as u8;
-        let dst_reg = get_bits(bits, info::REG_BITS, info::DST_OFF) as usize;
-        let src1 = self.regs[get_bits(bits, info::REG_BITS, info::SRC1_OFF) as usize];
+        let opcode = get_bits(inst, OPCODE_BITS, OPCODE_OFF) as u8;
+        let is_imm = info::supports_imm(opcode) && get_bits(inst, IMMBIT_BITS, IMMBIT_OFF) == 1;
+        let modbits = get_bits(inst, MOD_BITS, MOD_OFF) as u8;
+        let dst_reg = get_bits(inst, REG_BITS, DST_OFF) as usize;
+        let src1 = self.regs[get_bits(inst, REG_BITS, SRC1_OFF) as usize];
         // src2 can be either a register or an immediate
         let tmps2 = if is_imm {
-            let imm = get_bits(bits, info::IMM_BITS, 0);
+            let imm = get_bits(inst, IMM_BITS, 0);
             match modbits {
-                info::MOD_DEF => sign_extend(imm, info::IMM_BITS),
-                info::MOD_U => imm as i32,
-                info::MOD_H => (imm << u16::BITS) as i32,
+                MOD_DEF => sign_extend(imm, IMM_BITS),
+                MOD_U => imm as i32,
+                MOD_H => (imm << u16::BITS) as i32,
                 _ => return Err(EmulatorErr::InvalidModbits),
             }
         } else {
-            self.regs[get_bits(bits, info::REG_BITS, info::SRC2_OFF) as usize].0
+            self.regs[get_bits(inst, REG_BITS, SRC2_OFF) as usize].0
         };
         let src2 = Wrapping(tmps2);
-        let new_pc =
-            self.prog_cnt + sign_extend(get_bits(bits, info::OFFSET_BITS, 0), info::OFFSET_BITS);
-        // imm[reg] is understood as (reg + imm)
+        let new_pc = self.prog_cnt + sign_extend(get_bits(inst, OFFSET_BITS, 0), OFFSET_BITS);
+        // imm[reg] is understood as (reg + imm), where imm is always src2
         let memaddr = src1 + src2;
 
         Ok(UnpackedIns {
@@ -203,6 +211,10 @@ impl<'a> Emulator<'a> {
         let ret = match call_num {
             0 => sys_getchar(),
             1 => sys_putchar(self.regs[1].0),
+            // 2 => {
+            //     println!("{}", self.regs[self.regs[1].0 as usize & 0b1111]);
+            //     0
+            // }
             _ => return Err(EmulatorErr::InvalidSyscall),
         };
         Ok(ret)
@@ -219,7 +231,7 @@ fn sys_getchar() -> i32 {
 }
 
 fn sys_putchar(c: i32) -> i32 {
-    if let Ok(_) = std::io::stdout().write(&[c as u8]) {
+    if std::io::stdout().write(&[c as u8]).is_ok() {
         c
     } else {
         -1

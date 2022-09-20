@@ -2,26 +2,43 @@
 
 /*!
 Instruction Encoding:
-Each instruction is 32 bits long and there are 3 total formats.
-Not all instructions use every field.
+Each instruction is 32 bits long and there are 3 different formats.
 
+3-Address, src2 is a register:
 ```text
 5       1   4       4        4        14
-xxxxx   x   xxxx    xxxx     xxxx     xxxxxxxxxxxxxx
-opcode I=0 dst_reg src1_reg  src2_reg dont_care_bits
+bbbbb   0   bbbb    bbbb     bbbb     xxxxxxxxxxxxxx
+opcode I=0 dst_reg src1_reg  src2_reg dont_care
+```
 
+3-Address, src2 is an immediate:
+```text
 5       1   4       4        2       16
-xxxxx   x   xxxx    xxxx     xx      xxxxxxxxxxxxxxxx
+bbbbb   1   bbbb    bbbb     bb      bbbbbbbbbbbbbbbb
 opcode I=1 dst_reg src1_reg  modbits immediate(src2)
+```
 
+2-address:
+Same as 3-address except that src1_reg field is not used(dont_care)
+
+1-Address:
+```text
 5      27
-xxxx   xxxxxxxxxxxxxxxxxxxxxxxxxxx
+bbbb   bbbbbbbbbbbbbbbbbbbbbbbbbbb
 opcode word_offset(2's complement)
+```
+
+0-address
+```text
+5      27
+bbbb   xxxxxxxxxxxxxxxxxxxxxxxxxxx
+opcode dont_care
 ```
 */
 
 /**
-The system-call instruction
+Extra:
+The system-call instruction.
 sys is a 0-address instruction.
 
 It uses the following registers for argument passing and return values:
@@ -34,26 +51,26 @@ Information about system calls is documented in the simpleRISC.md file
 
 pub const RET_REG: usize = 15;
 
-// Offsets of fields
-pub const OPCODE_OFF: u8 = 27;
-pub const IMMBIT_OFF: u8 = 26;
-pub const DST_OFF: u8 = 22;
-pub const SRC1_OFF: u8 = 18;
-pub const MOD_OFF: u8 = 16;
-pub const SRC2_OFF: u8 = 14;
-
-// Field width in bits
-pub const OPCODE_BITS: u8 = 5;
-pub const IMMBIT_BITS: u8 = 1;
-pub const REG_BITS: u8 = 4;
-pub const MOD_BITS: u8 = 2;
-pub const IMM_BITS: u8 = 16;
-pub const OFFSET_BITS: u8 = 27;
-
-// Immediate modifier bits values
-pub const MOD_DEF: u8 = 0b00;
-pub const MOD_U: u8 = 0b01;
-pub const MOD_H: u8 = 0b10;
+pub mod bits {
+    // Offsets of fields
+    pub const OPCODE_OFF: u8 = 27;
+    pub const IMMBIT_OFF: u8 = 26;
+    pub const DST_OFF: u8 = 22;
+    pub const SRC1_OFF: u8 = 18;
+    pub const MOD_OFF: u8 = 16;
+    pub const SRC2_OFF: u8 = 14;
+    // Field width in bits
+    pub const OPCODE_BITS: u8 = 5;
+    pub const IMMBIT_BITS: u8 = 1;
+    pub const REG_BITS: u8 = 4;
+    pub const MOD_BITS: u8 = 2;
+    pub const IMM_BITS: u8 = 16;
+    pub const OFFSET_BITS: u8 = 27;
+    // Immediate modifier bits(2-bits)
+    pub const MOD_DEF: u8 = 0b00;
+    pub const MOD_U: u8 = 0b01;
+    pub const MOD_H: u8 = 0b10;
+}
 
 pub mod opcodes {
     // Must be in order
@@ -132,6 +149,11 @@ pub const INSTRUCTIONS: [Instruction; 22] = [
     instup!("sys", SYS, 0, 0),
 ];
 
-pub fn support_mod(opcode: u8) -> bool {
+pub fn supports_mod(opcode: u8) -> bool {
     opcode <= MOV
+}
+
+pub fn supports_imm(opcode: u8) -> bool {
+    let ins = INSTRUCTIONS[opcode as usize];
+    ins.ndst + ins.nsrc >= 2
 }
