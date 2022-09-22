@@ -22,16 +22,6 @@ const REGISTERS: [(&str, u8); 17] = [
 ];
 
 #[derive(Debug, PartialEq, Eq)]
-enum Token {
-    Eof,
-    Ident(String),
-    Inst(Instruction),
-    Reg(u8),
-    Imm(u16),
-    Char(char),
-}
-
-#[derive(Debug, PartialEq, Eq)]
 pub struct ParseErr {
     kind: ErrKind,
     line: usize,
@@ -42,11 +32,12 @@ enum ErrKind {
     IllegalModifier,
     ImmOverflow,
     InvalidImm,
-    IllegalToken(Token),
+    OpenComment,
     RegExp,
     ImmExp,
     OperandExp,
     IdentExp,
+    IllegalToken,
     CharExp(char),
     DuplicateLabel(String),
     UndefinedLabel(String),
@@ -65,7 +56,8 @@ impl fmt::Display for ParseErr {
             ErrKind::IllegalModifier => write!(f, "Modifier not allowed"),
             ErrKind::ImmOverflow => write!(f, "Immediate out of range(overflow)"),
             ErrKind::InvalidImm => write!(f, "Invalid immediate"),
-            ErrKind::IllegalToken(tok) => write!(f, "Token '{:?}' not expected by any rule", tok),
+            ErrKind::OpenComment => write!(f, "Comment not closed"),
+            ErrKind::IllegalToken => write!(f, "Token not expected by any rule"),
             ErrKind::RegExp => write!(f, "Register Expected"),
             ErrKind::ImmExp => write!(f, "Immediate Expected"),
             ErrKind::OperandExp => write!(f, "Immediate or register expected"),
@@ -75,6 +67,16 @@ impl fmt::Display for ParseErr {
             ErrKind::UndefinedLabel(s) => write!(f, "Label not found '{}'", s),
         }
     }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum Token {
+    Eof,
+    Ident(String),
+    Inst(Instruction),
+    Reg(u8),
+    Imm(u16),
+    Char(char),
 }
 
 impl Token {
@@ -134,7 +136,7 @@ struct Scanner<'a> {
 }
 
 impl<'a> Scanner<'a> {
-    pub fn new(input: &'a str) -> Self {
+    fn new(input: &'a str) -> Self {
         Scanner {
             left: input,
             cursor: 0,
@@ -144,34 +146,45 @@ impl<'a> Scanner<'a> {
     }
 
     /// Consume the input until `pred` evaluates to true and return the consumed part
-    pub fn take_while(&mut self, pred: impl Fn(char) -> bool) -> &'a str {
-        let ret;
+    fn take_while(&mut self, pred: impl Fn(char) -> bool) -> &'a str {
         let mut end = 0usize;
 
         for (i, ch) in self.left.char_indices() {
-            if pred(ch) {
-                end = i + ch.len_utf8();
-            } else {
+            if !pred(ch) {
                 break;
             }
+            end = i + ch.len_utf8();
             self.update_cursor(ch)
         }
+        let ret;
         (ret, self.left) = self.left.split_at(end);
         ret
     }
 
+    /// If the input starts with `prefix`, then consume it and
+    /// return true, otherwise return false
+    fn eat_prefix(&mut self, prefix: &str) -> bool {
+        if let Some(suf) = self.left.strip_prefix(prefix) {
+            prefix.chars().for_each(|ch| self.update_cursor(ch));
+            self.left = suf;
+            true
+        } else {
+            false
+        }
+    }
+
     /// Returns the first char without consuming input
-    pub fn peek(&self) -> Option<char> {
+    fn peek(&self) -> Option<char> {
         self.peekn(0)
     }
 
     /// Returns the nth char without consuming input
-    pub fn peekn(&self, n: usize) -> Option<char> {
+    fn peekn(&self, n: usize) -> Option<char> {
         self.left.chars().nth(n)
     }
 
     /// Consume the character and return it
-    pub fn next(&mut self) -> Option<char> {
+    fn next(&mut self) -> Option<char> {
         let mut iter = self.left.chars();
         let ret = iter.next();
         self.left = iter.as_str();
@@ -189,21 +202,22 @@ impl<'a> Scanner<'a> {
 }
 
 struct Parser<'a> {
-    citer: Scanner<'a>,
+    scn: Scanner<'a>,
     labels: HashMap<String, usize>,
     stmt_cnt: usize,
 }
+
 impl<'a> Parser<'a> {
     pub fn new(code: &'a str) -> Self {
         Self {
-            citer: Scanner::new(code),
+            scn: Scanner::new(code),
             labels: HashMap::new(),
             stmt_cnt: 0,
         }
     }
 
     pub fn line_num(&self) -> usize {
-        self.citer.line
+        self.scn.line
     }
 
     pub fn parse(&mut self) -> Result<Vec<u32>, ErrKind> {
@@ -221,7 +235,7 @@ impl<'a> Parser<'a> {
                 Token::Inst(inst) => stmts.push(self.make_statement(inst)?),
                 Token::Char('\n') => { /* Ignore extra newlines */ }
                 Token::Eof => break,
-                tok => return Err(ErrKind::IllegalToken(tok)),
+                _ => return Err(ErrKind::IllegalToken),
             };
         }
         self.assemble(stmts)
@@ -261,22 +275,21 @@ impl<'a> Parser<'a> {
     }
 
     fn next_tok(&mut self) -> Result<Token, ErrKind> {
-        while let Some(c) = self.citer.peek() {
-            if c == '\t' || c == ' ' || c == '@' {
-                // If a comment then skip to the end of the line
-                if c == '@' {
-                    self.citer.take_while(|c| c != '\n');
-                } else {
-                    self.citer.next();
-                }
+        while let Some(c) = self.scn.peek() {
+            if c == '\t' || c == ' ' {
+                self.scn.next();
+                continue;
+            }
+            if c == '@' || c == '/' {
+                eat_comment(&mut self.scn)?;
                 continue;
             }
 
             return match c {
-                '+' | '-' | '0'..='9' => immediate(&mut self.citer),
-                c if is_ident_char(c) => identifier(&mut self.citer),
+                '+' | '-' | '0'..='9' => immediate(&mut self.scn),
+                c if is_ident_char(c) => identifier(&mut self.scn),
                 c => {
-                    self.citer.next();
+                    self.scn.next();
                     Ok(Token::Char(c))
                 }
             };
@@ -373,6 +386,25 @@ fn encode_rrx(opcode: u8, dst: u8, src1: u8, modbits: u8, src2: Operand) -> u32 
 fn encode_label(opcode: u8, label_at: usize, cur_at: usize) -> u32 {
     let offset = (label_at as i32 - cur_at as i32) as u32;
     (opcode as u32) << bits::OPCODE_OFF | (offset & (!0u32 >> bits::OPCODE_BITS))
+}
+
+/// := '@' [^'\n']* '\n'
+///  | "/*" [^"*/"]* "*/"
+fn eat_comment(scn: &mut Scanner) -> Result<(), ErrKind> {
+    if scn.eat_prefix("@") {
+        scn.take_while(|c| c != '\n');
+        Ok(())
+    } else if scn.eat_prefix("/*") {
+        while !scn.eat_prefix("*/") {
+            if scn.next() == None {
+                return Err(ErrKind::OpenComment);
+            }
+        }
+        Ok(())
+    } else {
+        // We know that the first char is '/', so '*' is missing
+        Err(ErrKind::CharExp('*'))
+    }
 }
 
 fn immediate(scn: &mut Scanner) -> Result<Token, ErrKind> {
@@ -490,16 +522,10 @@ pub fn parse_code(input: &str) -> Result<Vec<u32>, ParseErr> {
 
 #[cfg(test)]
 mod tests {
+    use super::{
+        bits, immediate, instruction, opcodes, ErrKind, Instruction, Parser, Scanner, Token,
+    };
     use crate::parser::parse_code;
-
-    use super::bits;
-    use super::immediate;
-    use super::instruction;
-    use super::ErrKind;
-    use super::Instruction;
-    use super::Parser;
-    use super::Scanner;
-    use super::Token;
 
     #[test]
     fn test_scanner() {
@@ -531,7 +557,7 @@ mod tests {
             instruction("add"),
             Ok(Some(Token::Inst(Instruction {
                 name: "add",
-                opcode: 0,
+                opcode: opcodes::ADD,
                 ndst: 1,
                 nsrc: 2,
                 modbits: bits::MOD_DEF,
@@ -541,7 +567,7 @@ mod tests {
             instruction("addh"),
             Ok(Some(Token::Inst(Instruction {
                 name: "add",
-                opcode: 0,
+                opcode: opcodes::ADD,
                 ndst: 1,
                 nsrc: 2,
                 modbits: bits::MOD_H,
@@ -559,7 +585,7 @@ mod tests {
             ("mov r0, -0x1\n", 0b01001_1_0000_0000_00_1111111111111111),
             ("add r0, r1, r2\n", 0b00000_0_0000_0001_0010 << 14),
             (
-                "add r0, r1, 0b1101\n",
+                "add r0, r1, /* Block comment */ 0b1101\n",
                 0b00000_1_0000_0001_00_0000000000001101,
             ),
             (
@@ -574,15 +600,17 @@ mod tests {
 
     #[test]
     fn test_bad() {
-        let test_pairs: [(&str, ErrKind); 10] = [
+        let test_pairs: [(&str, ErrKind); 12] = [
             ("add r0, r1", ErrKind::CharExp(',')),
+            ("add r0, /* uncomp*", ErrKind::OpenComment),
+            ("/ *Illegal comment */", ErrKind::CharExp('*')),
             ("add r0, r1, r4", ErrKind::CharExp('\n')),
             ("add r0, r1, \n", ErrKind::OperandExp),
             ("addh r0, r1, r2 \n", ErrKind::IllegalModifier),
             ("noph\n", ErrKind::IllegalModifier),
             ("b r0\n", ErrKind::IdentExp),
             ("cmp 24, 88\n", ErrKind::RegExp),
-            ("r13 add r11\n", ErrKind::IllegalToken(Token::Reg(13))),
+            ("r13 add r11\n", ErrKind::IllegalToken),
             (
                 "b undefme\n",
                 ErrKind::UndefinedLabel(String::from("undefme")),
