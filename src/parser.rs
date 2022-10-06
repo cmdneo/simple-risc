@@ -34,7 +34,7 @@ enum ErrKind {
     InvalidImm,
     OpenComment,
     RegExp,
-    ImmExp,
+    ImmBrackExp,
     OperandExp,
     IdentExp,
     IllegalToken,
@@ -59,12 +59,12 @@ impl fmt::Display for ParseErr {
             ErrKind::OpenComment => write!(f, "Comment not closed"),
             ErrKind::IllegalToken => write!(f, "Token not expected by any rule"),
             ErrKind::RegExp => write!(f, "Register Expected"),
-            ErrKind::ImmExp => write!(f, "Immediate Expected"),
+            ErrKind::ImmBrackExp => write!(f, "Immediate or '[' Expected"),
             ErrKind::OperandExp => write!(f, "Immediate or register expected"),
             ErrKind::IdentExp => write!(f, "Label expected"),
-            ErrKind::CharExp(c) => write!(f, "Character '{}' expected", c),
-            ErrKind::DuplicateLabel(s) => write!(f, "Duplicate label '{}'", s),
-            ErrKind::UndefinedLabel(s) => write!(f, "Label not found '{}'", s),
+            ErrKind::CharExp(c) => write!(f, "Character '{c}' expected"),
+            ErrKind::DuplicateLabel(s) => write!(f, "Duplicate label '{s}'"),
+            ErrKind::UndefinedLabel(s) => write!(f, "Label not found '{s}'"),
         }
     }
 }
@@ -80,14 +80,6 @@ enum Token {
 }
 
 impl Token {
-    fn try_imm(self) -> Result<u16, ErrKind> {
-        if let Self::Imm(imm) = self {
-            Ok(imm)
-        } else {
-            Err(ErrKind::ImmExp)
-        }
-    }
-
     fn try_reg(self) -> Result<u8, ErrKind> {
         if let Self::Reg(reg) = self {
             Ok(reg)
@@ -208,7 +200,7 @@ struct Parser<'a> {
 }
 
 impl<'a> Parser<'a> {
-    pub fn new(code: &'a str) -> Self {
+    fn new(code: &'a str) -> Self {
         Self {
             scn: Scanner::new(code),
             labels: HashMap::new(),
@@ -216,11 +208,11 @@ impl<'a> Parser<'a> {
         }
     }
 
-    pub fn line_num(&self) -> usize {
+    fn line_num(&self) -> usize {
         self.scn.line
     }
 
-    pub fn parse(&mut self) -> Result<Vec<u32>, ErrKind> {
+    fn parse(&mut self) -> Result<Vec<u32>, ErrKind> {
         let mut stmts: Vec<Statement> = Vec::new();
 
         loop {
@@ -311,10 +303,17 @@ impl<'a> Parser<'a> {
                 self.next_tok()?.try_the_char(',')?;
             }
         }
-        // := imm '[' reg ']'
+        // := imm? '[' reg ']'
         if is_ldst {
-            src2 = Operand::Imm(self.next_tok()?.try_imm()?);
-            self.next_tok()?.try_the_char('[')?;
+            match self.next_tok()? {
+                Token::Imm(imm) => {
+                    src2 = Operand::Imm(imm);
+                    self.next_tok()?.try_the_char('[')?;
+                }
+                // If immediate is omitted, then it is 0
+                Token::Char('[') => src2 = Operand::Imm(0),
+                _ => return Err(ErrKind::ImmBrackExp),
+            }
             src1 = self.next_tok()?.try_reg()?;
             self.next_tok()?.try_the_char(']')?;
         }
@@ -451,6 +450,7 @@ fn immediate(scn: &mut Scanner) -> Result<Token, ErrKind> {
     Ok(Token::Imm(num))
 }
 
+#[inline]
 fn is_ident_char(c: char) -> bool {
     c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | '$')
 }
@@ -509,7 +509,7 @@ fn instruction(mut instr: &str) -> Result<Option<Token>, ErrKind> {
     Ok(None)
 }
 
-pub fn parse_code(input: &str) -> Result<Vec<u32>, ParseErr> {
+pub fn parse_and_assemble(input: &str) -> Result<Vec<u32>, ParseErr> {
     let mut asm = Parser::new(input);
     match asm.parse() {
         Ok(ret) => Ok(ret),
@@ -522,10 +522,7 @@ pub fn parse_code(input: &str) -> Result<Vec<u32>, ParseErr> {
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        bits, immediate, instruction, opcodes, ErrKind, Instruction, Parser, Scanner, Token,
-    };
-    use crate::parser::parse_code;
+    use super::*;
 
     #[test]
     fn test_scanner() {
@@ -542,7 +539,7 @@ mod tests {
             ("42", Ok(Token::Imm(42))),
             ("0", Ok(Token::Imm(0))),
             ("-42", Ok(Token::Imm(!42 + 1))),
-            ("-0x69", Ok(Token::Imm(!0x69 + 1))),
+            ("-0x101", Ok(Token::Imm(!0x101 + 1))),
             ("0x1FFFF", Err(ErrKind::ImmOverflow)),
             ("0x1oops", Err(ErrKind::InvalidImm)),
         ];
@@ -581,7 +578,7 @@ mod tests {
     #[test]
     fn test_fine() {
         // Test only for first instruction
-        let test_pairs: [(&str, u32); 4] = [
+        let test_pairs: [(&str, u32); 6] = [
             ("mov r0, -0x1\n", 0b01001_1_0000_0000_00_1111111111111111),
             ("add r0, r1, r2\n", 0b00000_0_0000_0001_0010 << 14),
             (
@@ -592,6 +589,8 @@ mod tests {
                 "b has_label\n ret\n ret\n has_label: ret\n",
                 0b10010_000000000000000000000000011,
             ),
+            ("ld r0, -1[r0]\n", 0b01110_1_0000_0000_00_1111111111111111),
+            ("ld r0, [r1]\n", 0b01110_1_0000_0001_00_0000000000000000),
         ];
         for (input, res) in test_pairs {
             assert_eq!(Parser::new(input).parse().unwrap()[0], res);
@@ -621,7 +620,7 @@ mod tests {
             ),
         ];
         for (input, err) in test_pairs {
-            assert_eq!(parse_code(input).unwrap_err().kind, err);
+            assert_eq!(parse_and_assemble(input).unwrap_err().kind, err);
         }
     }
 }

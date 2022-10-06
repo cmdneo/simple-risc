@@ -1,4 +1,4 @@
-use simple_risc::{emulator::Emulator, parser::parse_code};
+use simple_risc::{emulator::Emulator, parser::parse_and_assemble};
 
 #[test]
 fn test_factorial() {
@@ -26,7 +26,7 @@ fn test_factorial() {
         
     exit: @ Nothing
     ";
-    let bincode = parse_code(code).unwrap();
+    let bincode = parse_and_assemble(code).unwrap();
     let mut emul = Emulator::new(&bincode);
     emul.exec().unwrap();
     assert_eq!(emul.get_reg_val(0), 120);

@@ -42,7 +42,7 @@ Registers `r[0-15]` are directly accessible to the user.
 `r15` is used as return address register by `call` and `ret` instructions.
 
 `flags` register used for storing result of the `cmp` instruction.  
-It has two fields `flags.E` and `flags.GT`.
+It has two fields `flags.EQ` and `flags.GT`.
 
 The program counter `pc` stores index of the instruction being executed.  
 Valid values for `pc` lie in the interval `[0, TOTAL_INSTRUCTION_COUNT)`  
@@ -54,7 +54,6 @@ Registers `flags` and `pc` are not directly accesible to the user.
 Instructions
 ---
 First operand is denoted by `A`, second by `B` and third by `C`.  
-First operand is always the destination register(except for `st` instruction).  
 For `ld` and `st` instructions effective memory address must be aligned to 4 bytes.  
 Only the lower 5 bits of the third operand are considered for
 shift instructions(`lsl`, `lsr` and `asr`).
@@ -70,7 +69,7 @@ shift instructions(`lsl`, `lsr` and `asr`).
 | `cmp reg, reg/imm`      | `flags.E <- A == B`<br>`flags.GT <- A > B` |
 | `and reg, reg, reg/imm` | `A <- B & C`                               |
 | `or reg, reg, reg/imm`  | `A <- B \| C`                              |
-| `not reg, reg/imm`      | `A <- !B`                                  |
+| `not reg, reg/imm`      | `A <- ~B`                                  |
 | `lsl reg, reg, reg/imm` | `A <- B << C`                              |
 | `lsr reg, reg, reg/imm` | `A <- B >> C`                              |
 | `asr reg, reg, reg/imm` | `A <- B >>> C`    [^1]                     |
@@ -84,6 +83,7 @@ shift instructions(`lsl`, `lsr` and `asr`).
 | `nop`                   | No operation                               |
 | `sys`                   | `r0 <- syscall(r0)` [^3]                   |
 
+Immediate can be omitted for `ld` and `st` instructions if it is zero.
 
 ### Modifiers
 Modifiers can be used with the following instructions `add`, `sub`, `mul`, `div`, `mod`, `cmp`, `and`, `or`, `not` and `mov`.  
@@ -116,8 +116,15 @@ Rest of the registers are preserved.
 
 ### List of syscalls
 
-(0) `getchar()`: Reads one byte and returns it, returns -1 on failure  
-(1) `putchar(byte c)`: Prints the character and returns it, returns -1 on failure
+(0) `getchar()`:  
+Reads one byte and returns it, returns -1 on failure
+
+(1) `putchar(byte c)`:  
+Prints the character and returns it, returns -1 on failure
+
+(2) `print_reg(byte reg_id)`:  
+Only lower 4-bits of `reg_id` are considered.  
+Prints the register value as a signed integer with a trailing newline, returns 0
 
 [^1]: Arithmetic Right shift.
 

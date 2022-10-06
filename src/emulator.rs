@@ -1,9 +1,9 @@
-//! Implements a basic (maybe working) emulator for simpleRISC.
+//! Implements a basic emulator for simpleRISC.
 //! It uses 2's complement wrap-around arithmetic for all calculations.
 
 use crate::info::{self, bits::*, opcodes::*};
 use std::{
-    fmt::{self, write},
+    fmt,
     io::{Read, Write},
     num::Wrapping,
 };
@@ -22,7 +22,7 @@ pub struct Emulator<'a> {
     /// Register file, r[0-15]
     regs: [Wrapping<i32>; 16],
     /// Stores words(=4bytes) instead of storing each byte seperately.
-    /// Only for aligned(by 4 bytes) access, word_index = memaddr/4
+    /// Only for aligned(by 4 bytes) access, `word_index = memaddr/4`
     wmemory: [Wrapping<i32>; MEM_WORD_MAX],
     instructions: &'a [u32],
     prog_cnt: i32,
@@ -211,10 +211,11 @@ impl<'a> Emulator<'a> {
         let ret = match call_num {
             0 => sys_getchar(),
             1 => sys_putchar(self.regs[1].0),
-            // 2 => {
-            //     println!("{}", self.regs[self.regs[1].0 as usize & 0b1111]);
-            //     0
-            // }
+            // sys_print_reg
+            2 => {
+                println!("{}", self.regs[self.regs[1].0 as usize & 0b1111]);
+                0
+            }
             _ => return Err(EmulatorErr::InvalidSyscall),
         };
         Ok(ret)

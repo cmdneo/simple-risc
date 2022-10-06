@@ -1,5 +1,5 @@
 use simple_risc::emulator::Emulator;
-use simple_risc::parser::parse_code;
+use simple_risc::parser::parse_and_assemble;
 use std::{env::args, process::exit};
 
 fn main() {
@@ -18,7 +18,7 @@ fn main() {
         exit(1);
     }
 
-    let instructions = parse_code(&code).unwrap_or_else(|err| {
+    let instructions = parse_and_assemble(&code).unwrap_or_else(|err| {
         eprintln!("[ERROR] {}", err);
         exit(1);
     });
