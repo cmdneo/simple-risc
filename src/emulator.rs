@@ -1,12 +1,8 @@
 //! Implements a basic emulator for simpleRISC.
 //! It uses 2's complement wrap-around arithmetic for all calculations.
 
-use crate::info::{self, bits::*, opcodes::*};
-use std::{
-    fmt,
-    io::{Read, Write},
-    num::Wrapping,
-};
+use crate::info::{self, bits::*, Opcode};
+use std::{fmt, num::Wrapping};
 
 const MEM_WORD_MAX: usize = 4096;
 struct UnpackedIns {
@@ -15,7 +11,7 @@ struct UnpackedIns {
     src2: Wrapping<i32>,
     memaddr: i32,
     new_pc: i32,
-    opcode: u8,
+    opcode: Opcode,
 }
 
 pub struct Emulator<'a> {
@@ -35,7 +31,6 @@ pub enum EmulatorErr {
     InvalidModbits,
     InvalidMemAddr,
     InvalidOpcode,
-    InvalidSyscall,
     DivideByZero,
     UnalignedMemAddr,
 }
@@ -46,7 +41,6 @@ impl fmt::Display for EmulatorErr {
             Self::InvalidModbits => write!(f, "Invalid immediate modifier bits"),
             Self::InvalidMemAddr => write!(f, "Memory address out of range"),
             Self::InvalidOpcode => write!(f, "Non-existent instruction"),
-            Self::InvalidSyscall => write!(f, "Invalid syscall number/arguments"),
             Self::DivideByZero => write!(f, "Divide by 0 error"),
             Self::UnalignedMemAddr => write!(f, "Memory address not aligned by 4 bytes"),
         }
@@ -96,8 +90,10 @@ impl<'a> Emulator<'a> {
 
     /// Executes the instruction contained in `bits` and returns the new `pc`
     fn exec_inst(&mut self, inst: u32) -> Result<i32, EmulatorErr> {
+        use Opcode::*;
+
         let UnpackedIns {
-            mut dst_reg,
+            dst_reg,
             src1,
             mut src2,
             memaddr,
@@ -113,8 +109,6 @@ impl<'a> Emulator<'a> {
             // Only consider the lower 5 bits for shift amount(that is max 31)
             LSL | LSR | ASR => src2 = Wrapping(src2.0 & 0b11111),
             DIV | MOD if src2.0 == 0 => return Err(EmulatorErr::DivideByZero),
-            // A syscall stores its return value in r0
-            SYS => dst_reg = 0,
             _ => {}
         };
 
@@ -149,10 +143,6 @@ impl<'a> Emulator<'a> {
                 return Ok(new_pc);
             }
             RET => return Ok(self.regs[info::RET_REG].0),
-            SYS => Wrapping(self.do_syscall(self.regs[0].0)?),
-            _ => {
-                return Err(EmulatorErr::InvalidOpcode);
-            }
         };
 
         Ok(self.prog_cnt + 1)
@@ -197,45 +187,15 @@ impl<'a> Emulator<'a> {
         // imm[reg] is understood as (reg + imm), where imm is always src2
         let memaddr = src1 + src2;
 
+        assert!(opcode <= Opcode::RET as u8, "Invalid opcode"); // RET is the last instruction
         Ok(UnpackedIns {
             dst_reg,
             src1,
             src2,
             memaddr: memaddr.0,
             new_pc,
-            opcode,
+            opcode: unsafe { std::mem::transmute::<u8, Opcode>(opcode) },
         })
-    }
-
-    fn do_syscall(&mut self, call_num: i32) -> Result<i32, EmulatorErr> {
-        let ret = match call_num {
-            0 => sys_getchar(),
-            1 => sys_putchar(self.regs[1].0),
-            // sys_print_reg
-            2 => {
-                println!("{}", self.regs[self.regs[1].0 as usize & 0b1111]);
-                0
-            }
-            _ => return Err(EmulatorErr::InvalidSyscall),
-        };
-        Ok(ret)
-    }
-}
-
-// All system call functions take i32 type for all arguments
-fn sys_getchar() -> i32 {
-    if let Some(Ok(b)) = std::io::stdin().bytes().next() {
-        b as i32
-    } else {
-        -1
-    }
-}
-
-fn sys_putchar(c: i32) -> i32 {
-    if std::io::stdout().write(&[c as u8]).is_ok() {
-        c
-    } else {
-        -1
     }
 }
 

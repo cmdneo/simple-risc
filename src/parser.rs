@@ -1,4 +1,4 @@
-use crate::info::{self, bits, opcodes, Instruction};
+use crate::info::{self, bits, Instruction, Opcode};
 use std::{collections::HashMap, fmt, num::IntErrorKind};
 
 const REGISTERS: [(&str, u8); 17] = [
@@ -291,7 +291,7 @@ impl<'a> Parser<'a> {
 
     fn make_statement(&mut self, inst: Instruction) -> Result<Statement, ErrKind> {
         let (mut dst, mut src1, mut src2) = (0u8, 0u8, Operand::Reg(0));
-        let is_ldst = matches!(inst.opcode, opcodes::LD | opcodes::ST);
+        let is_ldst = matches!(inst.opcode, Opcode::LD | Opcode::ST);
         // Label only instructions take only one source and no destination
         let is_op2_label = inst.ndst == 0 && inst.nsrc == 1;
 
@@ -361,7 +361,7 @@ impl<'a> Parser<'a> {
 }
 
 /// Encodes the format `inst reg, reg, reg|imm`
-fn encode_rrx(opcode: u8, dst: u8, src1: u8, modbits: u8, src2: Operand) -> u32 {
+fn encode_rrx(opcode: Opcode, dst: u8, src1: u8, modbits: u8, src2: Operand) -> u32 {
     match src2 {
         Operand::Reg(regs2) => {
             (opcode as u32) << bits::OPCODE_OFF
@@ -382,7 +382,7 @@ fn encode_rrx(opcode: u8, dst: u8, src1: u8, modbits: u8, src2: Operand) -> u32 
 }
 
 /// Encodes the format `inst label`
-fn encode_label(opcode: u8, label_at: usize, cur_at: usize) -> u32 {
+fn encode_label(opcode: Opcode, label_at: usize, cur_at: usize) -> u32 {
     let offset = (label_at as i32 - cur_at as i32) as u32;
     (opcode as u32) << bits::OPCODE_OFF | (offset & (!0u32 >> bits::OPCODE_BITS))
 }
@@ -493,7 +493,7 @@ fn instruction(mut instr: &str) -> Result<Option<Token>, ErrKind> {
         if instr != name {
             continue;
         }
-        if modbits != bits::MOD_DEF && !info::supports_mod(opcode) {
+        if modbits != bits::MOD_DEF && !info::supports_mod(opcode as u8) {
             return Err(ErrKind::IllegalModifier);
         }
 
@@ -554,7 +554,7 @@ mod tests {
             instruction("add"),
             Ok(Some(Token::Inst(Instruction {
                 name: "add",
-                opcode: opcodes::ADD,
+                opcode: Opcode::ADD,
                 ndst: 1,
                 nsrc: 2,
                 modbits: bits::MOD_DEF,
@@ -564,7 +564,7 @@ mod tests {
             instruction("addh"),
             Ok(Some(Token::Inst(Instruction {
                 name: "add",
-                opcode: opcodes::ADD,
+                opcode: Opcode::ADD,
                 ndst: 1,
                 nsrc: 2,
                 modbits: bits::MOD_H,

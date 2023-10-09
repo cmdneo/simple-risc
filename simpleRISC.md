@@ -1,7 +1,7 @@
 SimpleRISC
 ===
 
-Taken from *Chapter 3* of the book [Basic Computer Architecture](https://www.cse.iitd.ac.in/~srsarangi/archbooksoft.html).
+Taken from the book [Basic Computer Architecture](https://www.cse.iitd.ac.in/~srsarangi/archbooksoft.html).
 
 All calculations use **32 bit 2's complement wrap-around arithmetic**.  
 The program is executed from top to bottom.
@@ -81,7 +81,6 @@ shift instructions(`lsl`, `lsr` and `asr`).
 | `call label`            | `r15 <- (pc + 1)`, then branch             |
 | `ret`                   | `pc <- r15` (branches to return address)   |
 | `nop`                   | No operation                               |
-| `sys`                   | `r0 <- syscall(r0)` [^3]                   |
 
 Immediate can be omitted for `ld` and `st` instructions if it is zero.
 
@@ -129,5 +128,3 @@ Prints the register value as a signed integer with a trailing newline, returns 0
 [^1]: Arithmetic Right shift.
 
 [^2]: Exception, here the destination register acts as a source
-
-[^3]: This instruction([See sys instruction](#the-sys-instruction)) is an extension for better interaction with the language.

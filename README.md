@@ -1,8 +1,7 @@
 SimpleRISC
 =====
-Implementation of *SimpleRISC* emulator as desrcibed in
-*Chapter 3* of the book [Basic Computer Architecture](https://www.cse.iitd.ac.in/~srsarangi/archbooksoft.html)
-using **The Rust Programming Language** with some modifications.  
+Implementation of *SimpleRISC* emulator as desrcibed in the book [Basic Computer Architecture](https://www.cse.iitd.ac.in/~srsarangi/archbooksoft.html)
+using **The Rust Programming Language**.  
 
 ### Building and running the tests
 
@@ -56,23 +55,4 @@ ret_fac:
     ret
 
 exit: @ End
-```
-
-Using the `sys` instruction added in this implementation
-to print the English alphabet:
-```
-    mov r5, 65   @ 'A'
-loop:
-    mov r0, 1    @ Syscall num for putchar
-    mov r1, r5   @ First arg to putchar
-    sys
-    add r5, r5, 1
-    cmp r5, 90   @ 'Z'
-    bgt exit
-    b loop
-exit:
-    @ Print a newline
-    mov r0, 1
-    mov r1, 10   @ '\n'
-    sys
 ```

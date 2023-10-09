@@ -72,36 +72,36 @@ pub mod bits {
     pub const MOD_H: u8 = 0b10;
 }
 
-pub mod opcodes {
-    // Must be in order
-    pub const ADD: u8 = 0;
-    pub const SUB: u8 = 1;
-    pub const MUL: u8 = 2;
-    pub const DIV: u8 = 3;
-    pub const MOD: u8 = 4;
-    pub const CMP: u8 = 5;
-    pub const AND: u8 = 6;
-    pub const OR: u8 = 7;
-    pub const NOT: u8 = 8;
-    pub const MOV: u8 = 9;
-    pub const LSL: u8 = 10;
-    pub const LSR: u8 = 11;
-    pub const ASR: u8 = 12;
-    pub const NOP: u8 = 13;
-    pub const LD: u8 = 14;
-    pub const ST: u8 = 15;
-    pub const BEQ: u8 = 16;
-    pub const BGT: u8 = 17;
-    pub const B: u8 = 18;
-    pub const CALL: u8 = 19;
-    pub const RET: u8 = 20;
-    pub const SYS: u8 = 21;
+#[repr(u8)]
+#[derive(Debug, Eq, PartialEq, PartialOrd, Clone, Copy)]
+pub enum Opcode {
+    ADD,
+    SUB,
+    MUL,
+    DIV,
+    MOD,
+    CMP,
+    AND,
+    OR,
+    NOT,
+    MOV,
+    LSL,
+    LSR,
+    ASR,
+    NOP,
+    LD,
+    ST,
+    BEQ,
+    BGT,
+    B,
+    CALL,
+    RET,
 }
 
 #[derive(PartialEq, Eq, Debug, Clone, Copy)]
 pub struct Instruction {
     pub name: &'static str,
-    pub opcode: u8,
+    pub opcode: Opcode,
     pub ndst: u8,
     pub nsrc: u8,
     pub modbits: u8,
@@ -119,9 +119,9 @@ macro_rules! instup {
     };
 }
 
-use opcodes::*;
+use Opcode::*;
 // Must be in the same order as in opcodes
-pub const INSTRUCTIONS: [Instruction; 22] = [
+pub const INSTRUCTIONS: [Instruction; 21] = [
     // These Instructions(upto mov) support 'u' & 'h' modifiers
     instup!("add", ADD, 1, 2),
     instup!("sub", SUB, 1, 2),
@@ -146,11 +146,10 @@ pub const INSTRUCTIONS: [Instruction; 22] = [
     instup!("b", B, 0, 1),
     instup!("call", CALL, 0, 1),
     instup!("ret", RET, 0, 0),
-    instup!("sys", SYS, 0, 0),
 ];
 
 pub fn supports_mod(opcode: u8) -> bool {
-    opcode <= MOV
+    opcode <= MOV as u8
 }
 
 pub fn supports_imm(opcode: u8) -> bool {
